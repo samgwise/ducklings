@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/game", "crates/maze"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# Engine
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "default_font", "file_watcher", "audio", "wav"] }
+bevy_ecs_tilemap = "0.19"
+# Procgen RNG (used by crates/maze only)
+rand = "0.10"
+# Internal crates
+maze = { path = "crates/maze" }
+
+# Snappier runtime iteration for dev builds of Bevy apps
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,8 @@
+[package]
+name = "maze"
+version.workspace = true
+edition.workspace = true
+description = "Engine-free maze generation for the ducklings prototype"
+
+[dependencies]
+rand.workspace = true
