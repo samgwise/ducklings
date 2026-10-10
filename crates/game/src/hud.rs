@@ -70,7 +70,7 @@ fn spawn_hud(mut commands: Commands) {
             ));
             overlay.spawn((
                 Node::default(),
-                Text::new("Press Enter for the next pond"),
+                Text::new("Press Enter or A for the next pond"),
                 TextFont {
                     font_size: FontSize::Px(20.0),
                     ..default()

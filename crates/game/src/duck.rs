@@ -1,6 +1,7 @@
 //! The mother duck: buffered input, one-tile hops with a smooth lerp, and
 //! the path history her ducklings follow.
 
+use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
 
 use maze::Direction;
@@ -54,10 +55,22 @@ impl Plugin for DuckPlugin {
     }
 }
 
-/// Capture the latest pressed direction. Overwriting a queued move with a
-/// newer one feels right: intent, not a queue.
-fn buffer_input(keys: Res<ButtonInput<KeyCode>>, mut buffered: Single<&mut BufferedMove>) {
-    let dir = if keys.just_pressed(KeyCode::KeyW) || keys.just_pressed(KeyCode::ArrowUp) {
+/// Capture the latest pressed direction from the keyboard or any connected
+/// pad's D-pad. Overwriting a queued move with a newer one feels right:
+/// intent, not a queue.
+fn buffer_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    mut buffered: Single<&mut BufferedMove>,
+) {
+    if let Some(dir) = keyboard_direction(&keys).or_else(|| pad_direction(&pads)) {
+        buffered.0 = Some(dir);
+    }
+}
+
+/// The keyboard direction pressed this frame, if any.
+fn keyboard_direction(keys: &ButtonInput<KeyCode>) -> Option<Direction> {
+    if keys.just_pressed(KeyCode::KeyW) || keys.just_pressed(KeyCode::ArrowUp) {
         Some(Direction::North)
     } else if keys.just_pressed(KeyCode::KeyS) || keys.just_pressed(KeyCode::ArrowDown) {
         Some(Direction::South)
@@ -67,10 +80,24 @@ fn buffer_input(keys: Res<ButtonInput<KeyCode>>, mut buffered: Single<&mut Buffe
         Some(Direction::West)
     } else {
         None
-    };
-    if let Some(dir) = dir {
-        buffered.0 = Some(dir);
     }
+}
+
+/// The D-pad direction just pressed on any connected pad, if any. Steam
+/// Deck and Xbox pads both map their D-pads to these standard buttons.
+fn pad_direction(pads: &Query<&Gamepad>) -> Option<Direction> {
+    const D_PAD: [(GamepadButton, Direction); 4] = [
+        (GamepadButton::DPadUp, Direction::North),
+        (GamepadButton::DPadDown, Direction::South),
+        (GamepadButton::DPadRight, Direction::East),
+        (GamepadButton::DPadLeft, Direction::West),
+    ];
+    pads.iter().find_map(|pad| {
+        D_PAD
+            .iter()
+            .find(|&(button, _)| pad.just_pressed(*button))
+            .map(|&(_, dir)| dir)
+    })
 }
 
 /// Drive hops: advance the lerp, land (committing the cell and trail), then

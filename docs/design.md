@@ -13,8 +13,9 @@ clutch in tow.
 ## Mechanics
 
 - Grid-step movement. The duck hops one cell at a time with a short lerp;
-  one move can be buffered mid-hop so quick turns feel responsive. Hopping
-  into a hedge is a bump: nothing moves, a soft thud plays.
+  one move can be buffered mid-hop so quick turns feel responsive. Input
+  comes from the keyboard (WASD/arrows) or any connected controller's
+  D-pad. Hopping into a hedge is a bump: nothing moves, a soft thud plays.
 - Duckling trail. The duck's completed hops are recorded as a path history;
   duckling *i* drifts toward the position `SPACING × (i + 1)` steps back along
   that history, smoothed exponentially. The clutch forms a smooth conga line.
@@ -64,5 +65,5 @@ Volumes: music `0.6`, effects `0.9` (per-playback, set in `audio.rs`).
 
 - Generative in-process score built on `scalevec` (ambience driven by clutch
   size is the natural stretch).
-- Real art, hop animations beyond the lerp, shaders, title screen, gamepad,
+- Real art, hop animations beyond the lerp, shaders, title screen,
   persistence.

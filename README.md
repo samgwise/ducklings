@@ -56,4 +56,5 @@ cargo run -p game --example gen_placeholder_audio
 | Input | Action |
 | --- | --- |
 | WASD / arrow keys | Hop one tile |
-| Enter / Space | Next level (on the level-complete overlay) |
+| D-pad (Steam Deck / Xbox controllers) | Hop one tile |
+| Enter / Space / A (controller) | Next level (on the level-complete overlay) |

@@ -1,6 +1,7 @@
 //! Level flow: the Playing/Complete phase machine, the run seed, the level
 //! index, and the difficulty curve.
 
+use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
 
 use crate::audio::SfxEvent;
@@ -124,9 +125,18 @@ fn rebuild_level(
     );
 }
 
-/// On the complete overlay, Enter or Space moves on.
-fn advance_to_next_pond(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<GamePhase>>) {
-    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
+/// On the complete overlay, Enter, Space or the pad's A (South) moves on.
+fn advance_to_next_pond(
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    mut next: ResMut<NextState<GamePhase>>,
+) {
+    let advanced = keys.just_pressed(KeyCode::Enter)
+        || keys.just_pressed(KeyCode::Space)
+        || pads
+            .iter()
+            .any(|pad| pad.just_pressed(GamepadButton::South));
+    if advanced {
         next.set(GamePhase::Playing);
     }
 }
