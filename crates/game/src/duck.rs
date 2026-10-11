@@ -47,9 +47,27 @@ pub struct PathHistory(pub Vec<(u32, u32)>);
 #[derive(Component, Default)]
 pub struct BufferedMove(pub Option<Direction>);
 
-/// Pending hop directions from a click/tap, consumed one per hop.
+/// Pending hop directions from a click/tap, consumed one per hop, with the
+/// clicked cell the walk is aiming at — the out-of-range cue reads it when
+/// the corridor ends short.
 #[derive(Component, Default)]
-pub struct WalkPlan(pub VecDeque<Direction>);
+pub struct WalkPlan {
+    pub queue: VecDeque<Direction>,
+    pub target: Option<(u32, u32)>,
+}
+
+/// An out-of-range head shake in progress.
+#[derive(Component, Default)]
+pub struct HeadShake {
+    progress: f32,
+}
+
+/// How long the out-of-range head shake lasts, in seconds.
+const SHAKE_SECS: f32 = 0.36;
+/// Peak yaw swing of the shake, in radians.
+const SHAKE_AMPLITUDE: f32 = 0.6;
+/// How many full beak-wags fit in the shake.
+const SHAKE_WAGS: f32 = 3.0;
 
 pub struct DuckPlugin;
 
@@ -57,7 +75,9 @@ impl Plugin for DuckPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (pointer_walk, buffer_input, hop).run_if(in_state(GamePhase::Playing)),
+            (pointer_walk, buffer_input, hop, head_shake)
+                .chain()
+                .run_if(in_state(GamePhase::Playing)),
         );
     }
 }
@@ -148,10 +168,21 @@ fn hop(
         }
         commands.entity(entity).remove::<Hop>();
         sfx.write(SfxEvent::Hop);
+        // The walk ended short of the click: refuse in place.
+        if plan.queue.is_empty()
+            && let Some(target) = plan.target.take()
+            && duck.cell != target
+        {
+            sfx.write(SfxEvent::Bump);
+            commands.entity(entity).insert(HeadShake::default());
+        }
     }
     // A manual press cancels any queued walk: latest intent wins.
-    let next = buffered.0.take().inspect(|_| plan.0.clear());
-    let Some(dir) = next.or_else(|| plan.0.pop_front()) else {
+    let next = buffered.0.take().inspect(|_| {
+        plan.queue.clear();
+        plan.target = None;
+    });
+    let Some(dir) = next.or_else(|| plan.queue.pop_front()) else {
         return;
     };
     let (x, y) = duck.cell;
@@ -185,13 +216,16 @@ fn facing_angle(dir: Direction) -> f32 {
 
 /// Click or tap: queue hops along the straight corridor toward the point —
 /// as far as the click along one axis, never around corners.
+#[allow(clippy::too_many_arguments)]
 fn pointer_walk(
     clicks: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
+    mut sfx: MessageWriter<SfxEvent>,
+    mut commands: Commands,
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     maze_res: Res<MazeRes>,
-    target: Single<(&Duck, &mut WalkPlan)>,
+    target: Single<(Entity, &Duck, &mut WalkPlan)>,
 ) {
     let point = if clicks.just_pressed(MouseButton::Left) {
         window.cursor_position()
@@ -209,8 +243,38 @@ fn pointer_walk(
     };
     let cells = (maze_res.maze.width(), maze_res.maze.height());
     let cell = world_to_cell(cells, world);
-    let (duck, mut plan) = target.into_inner();
-    plan.0 = walk_plan(&maze_res.maze, duck.cell, cell).into();
+    let (duck_entity, duck, mut plan) = target.into_inner();
+    let steps = walk_plan(&maze_res.maze, duck.cell, cell);
+    if steps.is_empty() && cell != duck.cell {
+        // Straight into a hedge: refuse on the spot.
+        sfx.write(SfxEvent::Bump);
+        commands.entity(duck_entity).insert(HeadShake::default());
+        plan.queue.clear();
+        plan.target = None;
+    } else {
+        plan.queue = steps.into();
+        plan.target = Some(cell);
+    }
+}
+
+/// The out-of-range head shake: the beak wags left and right, decaying,
+/// while the duck otherwise stands still.
+fn head_shake(
+    time: Res<Time>,
+    mut commands: Commands,
+    shaker: Single<(Entity, &mut Duck, &mut Transform, &mut HeadShake)>,
+) {
+    let (entity, duck, mut transform, mut shake) = shaker.into_inner();
+    shake.progress += time.delta_secs() / SHAKE_SECS;
+    if shake.progress >= 1.0 {
+        commands.entity(entity).remove::<HeadShake>();
+        transform.rotation = Quat::from_rotation_z(duck.facing);
+        return;
+    }
+    let decay = 1.0 - shake.progress;
+    let offset =
+        (shake.progress * SHAKE_WAGS * core::f32::consts::TAU).sin() * SHAKE_AMPLITUDE * decay;
+    transform.rotation = Quat::from_rotation_z(duck.facing + offset);
 }
 
 /// The maze cell under a world point — hedges snap to their nearest cell,

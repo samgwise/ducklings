@@ -18,8 +18,10 @@ clutch in tow.
   or a click/tap: the duck hops along the corridor toward the point — as
   far as the click along the dominant axis, truncated at the first hedge,
   never around corners. A key or D-pad press cancels a queued walk; a new
-  click replaces it. Hopping into a hedge is a bump: nothing moves, a soft
-  thud plays.
+  click replaces it. A walk that ends short of its click — or a click
+  straight into a hedge — gets an out-of-range cue: the duck shakes her
+  head (a decaying beak wag) with the bump thud. Hopping into a hedge is
+  the same bump: nothing moves, a soft thud plays.
 - Duckling trail. The duck's completed hops are recorded as a path history;
   duckling *i* drifts toward the position `SPACING × (i + 1)` steps back along
   that history, smoothed exponentially. The clutch forms a smooth conga line.
@@ -39,6 +41,8 @@ clutch in tow.
 - `TRAIL_SPACING = 1` — history steps between consecutive ducklings.
 - `HISTORY_CAP = 512` — path history entries kept per level.
 - `CAMERA_SMOOTHING = 6.0` — exponential smoothing rate for camera follow.
+- `SHAKE_SECS = 0.36`, `SHAKE_AMPLITUDE = 0.6`, `SHAKE_WAGS = 3.0` — the
+  out-of-range head shake's duration, peak yaw swing (radians) and wags.
 - Level curve (index `n`, zero-based): width `7 + 2n` capped at 25, height
   `5 + n` capped at 17, ducklings `2 + n` capped at 12, braid `0.2`.
 
