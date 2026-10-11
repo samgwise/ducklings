@@ -34,6 +34,8 @@ const DUCK_COLOUR: Color = Color::srgb(0.99, 0.98, 0.96);
 const BEAK_COLOUR: Color = Color::srgb(0.94, 0.59, 0.24);
 /// A duckling's colour — warm yellow.
 const DUCKLING_COLOUR: Color = Color::srgb(0.97, 0.79, 0.34);
+/// Translucent dark for the drop shadows lifting birds off the floor.
+const SHADOW_COLOUR: Color = Color::srgba(0.15, 0.12, 0.08, 0.28);
 
 /// Marks everything that belongs to the current level and despawns with it.
 #[derive(Component)]
@@ -175,6 +177,13 @@ pub(crate) fn build_level(
         },
     ));
 
+    // One shared drop-shadow mesh and material. Centred under each bird —
+    // not offset — so the duck's facing rotation never swings it around,
+    // and larger than every body (mum 0.38, ducklings 0.7 × this) so a rim
+    // of shade peeks out and lifts the birds off the floor.
+    let shadow_mesh = meshes.add(Mesh::from(Circle::new(TILE_SIZE * 0.46)));
+    let shadow_material = materials.add(ColorMaterial::from_color(SHADOW_COLOUR));
+
     // Mum: a white circle with an orange beak, facing east.
     let duck_pos = cell_world_pos(cells, start, TILE_SIZE);
     commands
@@ -192,6 +201,11 @@ pub(crate) fn build_level(
         ))
         .with_children(|duck| {
             duck.spawn((
+                Mesh2d(shadow_mesh.clone()),
+                MeshMaterial2d(shadow_material.clone()),
+                Transform::from_xyz(0.0, 0.0, -0.1),
+            ));
+            duck.spawn((
                 Mesh2d(meshes.add(Mesh::from(Circle::new(TILE_SIZE * 0.11)))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(BEAK_COLOUR))),
                 Transform::from_xyz(TILE_SIZE * 0.36, 0.0, 0.0),
@@ -201,14 +215,22 @@ pub(crate) fn build_level(
     // The waiting clutch.
     for &cell in &spots {
         let pos = cell_world_pos(cells, cell, TILE_SIZE);
-        commands.spawn((
-            LevelEntity,
-            Duckling { cell, index: 0 },
-            Waiting,
-            Mesh2d(meshes.add(Mesh::from(Circle::new(TILE_SIZE * 0.26)))),
-            MeshMaterial2d(materials.add(ColorMaterial::from_color(DUCKLING_COLOUR))),
-            Transform::from_xyz(pos.x, pos.y, 0.9),
-        ));
+        commands
+            .spawn((
+                LevelEntity,
+                Duckling { cell, index: 0 },
+                Waiting,
+                Mesh2d(meshes.add(Mesh::from(Circle::new(TILE_SIZE * 0.26)))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(DUCKLING_COLOUR))),
+                Transform::from_xyz(pos.x, pos.y, 0.9),
+            ))
+            .with_children(|duckling| {
+                duckling.spawn((
+                    Mesh2d(shadow_mesh.clone()),
+                    MeshMaterial2d(shadow_material.clone()),
+                    Transform::from_xyz(0.0, 0.0, -0.1).with_scale(Vec3::splat(0.7)),
+                ));
+            });
     }
 }
 
