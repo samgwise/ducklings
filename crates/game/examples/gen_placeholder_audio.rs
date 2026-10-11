@@ -25,6 +25,7 @@ fn main() -> std::io::Result<()> {
     write_wav(&sfx.join("chirp.wav"), &chirp())?;
     write_wav(&sfx.join("fanfare.wav"), &fanfare())?;
     write_wav(&sfx.join("splash.wav"), &splash())?;
+    write_wav(&sfx.join("flutter.wav"), &flutter())?;
     println!("wrote placeholder sfx to {}", sfx.display());
     Ok(())
 }
@@ -89,6 +90,29 @@ fn splash() -> Vec<f32> {
             seed ^= seed << 17;
             let noise = ((seed >> 33) as i32) as f32 / i32::MAX as f32;
             0.35 * phase.sin() * (-t * 14.0).exp() + 0.18 * noise * (-t * 22.0).exp()
+        })
+        .collect()
+}
+
+/// A quick wing flutter: a soft buzz shaped by fast wingbeats — mum
+/// taking off over a fallen log.
+fn flutter() -> Vec<f32> {
+    let dur = 0.22_f32;
+    let len = (SAMPLE_RATE as f32 * dur) as usize;
+    let mut seed = 0x6C_F00D_u64;
+    (0..len)
+        .map(|s| {
+            let t = s as f32 / SAMPLE_RATE as f32;
+            let x = t / dur;
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let noise = ((seed >> 33) as i32) as f32 / i32::MAX as f32;
+            // Wingbeats: a full-wave-rectified ~34 Hz throb over a airy
+            // tone-plus-noise bed, fading in and out.
+            let beat = (TAU * 34.0 * t).sin().abs();
+            let window = (1.0 - (2.0 * x - 1.0).powi(2)).max(0.0);
+            0.4 * (0.6 * (TAU * 260.0 * t).sin() + 0.4 * noise) * beat * window
         })
         .collect()
 }

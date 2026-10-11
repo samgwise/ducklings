@@ -37,8 +37,9 @@ const TITLE_HEDGE_COLOUR: Color = Color::srgb(0.20, 0.33, 0.16);
 /// Exponential smoothing rate for camera follow.
 const CAMERA_SMOOTHING: f32 = 6.0;
 
-/// Atlas columns: cream floor, hedge wall, pink exit mat, and four blue
-/// water tiles with a flow chevron pointing along the current.
+/// Atlas columns: cream floor, hedge wall, pink exit mat, four blue water
+/// tiles with a flow chevron pointing along the current, and two bark
+/// brown fallen logs lying across a horizontal or vertical passage.
 const FLOOR_ATLAS_INDEX: u32 = 0;
 const WALL_ATLAS_INDEX: u32 = 1;
 const EXIT_ATLAS_INDEX: u32 = 2;
@@ -46,7 +47,9 @@ const WATER_EAST_ATLAS_INDEX: u32 = 3;
 const WATER_WEST_ATLAS_INDEX: u32 = 4;
 const WATER_NORTH_ATLAS_INDEX: u32 = 5;
 const WATER_SOUTH_ATLAS_INDEX: u32 = 6;
-const ATLAS_TILES: u32 = 7;
+const LOG_HORIZONTAL_ATLAS_INDEX: u32 = 7;
+const LOG_VERTICAL_ATLAS_INDEX: u32 = 8;
+const ATLAS_TILES: u32 = 9;
 /// Atlas columns of the title map's plain atlas: letter, hedge.
 const LETTER_ATLAS_INDEX: u32 = 0;
 const TITLE_HEDGE_ATLAS_INDEX: u32 = 1;
@@ -194,7 +197,14 @@ pub(crate) fn build_level(
     plan: &crate::level::LevelPlan,
     seed: u64,
 ) {
-    let maze = Maze::with_streams(plan.width, plan.height, seed, plan.braid, plan.streams);
+    let maze = Maze::with_obstacles(
+        plan.width,
+        plan.height,
+        seed,
+        plan.braid,
+        plan.streams,
+        plan.logs,
+    );
     let start = (0u32, 0u32);
     let cells = (plan.width, plan.height);
     // The exit is the farthest cell from the start.
@@ -392,28 +402,38 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
             }
         }
         // Between cell (tx/2 - 1, ty/2) and (tx/2, ty/2): floor iff the
-        // west cell's east passage is carved — and water, chevron along
-        // the flow, when that passage carries the current.
+        // west cell's east passage is carved — water, chevron along the
+        // flow, when that passage carries the current, or a fallen log
+        // lying across it.
         (0, 1) if tx >= 1 && tx + 1 < tw => {
             let west = ((tx - 1) / 2, ty / 2);
-            match maze.flow_at(west.0, west.1) {
-                Some(Direction::East) => water_atlas_index(Direction::East),
-                _ if maze.is_open(west.0 as i32, west.1 as i32, Direction::East) => {
-                    FLOOR_ATLAS_INDEX
+            if maze.is_logged(west.0 as i32, west.1 as i32, Direction::East) {
+                LOG_HORIZONTAL_ATLAS_INDEX
+            } else {
+                match maze.flow_at(west.0, west.1) {
+                    Some(Direction::East) => water_atlas_index(Direction::East),
+                    _ if maze.is_open(west.0 as i32, west.1 as i32, Direction::East) => {
+                        FLOOR_ATLAS_INDEX
+                    }
+                    _ => WALL_ATLAS_INDEX,
                 }
-                _ => WALL_ATLAS_INDEX,
             }
         }
         // Between cell (tx/2, ty/2 - 1) and (tx/2, ty/2): floor iff the
-        // south cell's north passage is carved — water along the flow.
+        // south cell's north passage is carved — water along the flow, or
+        // a log across it.
         (1, 0) if ty >= 1 && ty + 1 < th => {
             let south = (tx / 2, (ty - 1) / 2);
-            match maze.flow_at(south.0, south.1) {
-                Some(Direction::North) => water_atlas_index(Direction::North),
-                _ if maze.is_open(south.0 as i32, south.1 as i32, Direction::North) => {
-                    FLOOR_ATLAS_INDEX
+            if maze.is_logged(south.0 as i32, south.1 as i32, Direction::North) {
+                LOG_VERTICAL_ATLAS_INDEX
+            } else {
+                match maze.flow_at(south.0, south.1) {
+                    Some(Direction::North) => water_atlas_index(Direction::North),
+                    _ if maze.is_open(south.0 as i32, south.1 as i32, Direction::North) => {
+                        FLOOR_ATLAS_INDEX
+                    }
+                    _ => WALL_ATLAS_INDEX,
                 }
-                _ => WALL_ATLAS_INDEX,
             }
         }
         _ => WALL_ATLAS_INDEX,
@@ -483,6 +503,27 @@ fn water_chevron(direction: Direction, px: u32, py: u32, tile_px: u32) -> bool {
     let upper = ((px - py) - (apex - c)).abs() <= 1;
     let lower = ((px + py) - (apex + c)).abs() <= 1;
     px >= c - arm && px <= apex && (upper || lower)
+}
+
+/// RGBA of a fallen-log pixel: bark brown with a lit long edge, a dark
+/// opposite edge, end caps, and the occasional grain streak. A horizontal
+/// log lies along the passage (grain runs east–west); a vertical one is
+/// the same log stood the other way.
+fn log_pixel(horizontal: bool, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
+    const BARK: [u8; 4] = [124, 92, 60, 255];
+    const BARK_LIT: [u8; 4] = [156, 122, 82, 255];
+    const BARK_DARK: [u8; 4] = [94, 68, 44, 255];
+    // Along and across the log, so one body of code draws both layouts.
+    let (along, across) = if horizontal { (px, py) } else { (py, px) };
+    if across < 2 {
+        BARK_LIT
+    } else if across >= tile_px - 2 || along < 3 || along >= tile_px - 3 {
+        BARK_DARK
+    } else if (along * 5 + across * 11).is_multiple_of(13) {
+        BARK_LIT
+    } else {
+        BARK
+    }
 }
 
 /// The title map's atlas: two plain solid tiles (letter, hedge) — the
@@ -560,6 +601,8 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
                 WATER
             }
         }
+        LOG_HORIZONTAL_ATLAS_INDEX => log_pixel(true, px, py, tile_px),
+        LOG_VERTICAL_ATLAS_INDEX => log_pixel(false, px, py, tile_px),
         _ => {
             if border {
                 MAT_EDGE
@@ -674,6 +717,42 @@ mod tests {
                 assert_eq!(&data[i..i + 4], &expected[..]);
             }
         }
+    }
+
+    #[test]
+    fn tile_kind_paints_logged_passages() {
+        // Find a generated maze's logged passages — one of each orientation
+        // across a few seeds — and check the tile between the cells gets
+        // the log, not the floor.
+        let mut saw_horizontal = false;
+        let mut saw_vertical = false;
+        for seed in 0..20u64 {
+            let maze = Maze::with_obstacles(13, 11, seed, 0.2, 2, 3);
+            let exit = (0, 0);
+            let size = (27, 23);
+            for y in 0..11u32 {
+                for x in 0..13u32 {
+                    if maze.is_logged(x as i32, y as i32, Direction::East) && x + 1 < 13 {
+                        saw_horizontal = true;
+                        assert_eq!(
+                            tile_kind(&maze, exit, (2 * x + 2, 2 * y + 1), size),
+                            LOG_HORIZONTAL_ATLAS_INDEX,
+                            "east passage at {x},{y}"
+                        );
+                    }
+                    if maze.is_logged(x as i32, y as i32, Direction::North) && y + 1 < 11 {
+                        saw_vertical = true;
+                        assert_eq!(
+                            tile_kind(&maze, exit, (2 * x + 1, 2 * y + 2), size),
+                            LOG_VERTICAL_ATLAS_INDEX,
+                            "north passage at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(saw_horizontal, "some seed laid a horizontal log");
+        assert!(saw_vertical, "some seed laid a vertical log");
     }
 
     #[test]

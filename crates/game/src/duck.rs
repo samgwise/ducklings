@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use maze::{Direction, Maze};
 
 use crate::audio::SfxEvent;
+use crate::ducklings::Clutch;
 use crate::level::GamePhase;
 use crate::world::{MainCamera, MazeRes, TILE_SIZE, cell_world_pos};
 
@@ -19,6 +20,16 @@ pub const HOP_SECS: f32 = 0.15;
 /// Duration of one stream-carried hop, in seconds — the current is fast,
 /// roughly double walking speed.
 pub const STREAM_HOP_SECS: f32 = 0.07;
+
+/// Duration of one flight over a fallen log, in seconds — slower and
+/// weightier than a hop.
+pub const FLIGHT_HOP_SECS: f32 = 0.24;
+
+/// Peak height of a flight's arc, in world units (pixels).
+pub const FLIGHT_ARC: f32 = 16.0;
+
+/// Peak size gain mid-flight — she's off the ground.
+pub const FLIGHT_SCALE: f32 = 0.3;
 
 /// Path history entries kept per level — long enough for any conga line.
 pub const HISTORY_CAP: usize = 512;
@@ -39,10 +50,13 @@ pub struct Hop {
     pub to: Vec2,
     /// 0–1 through the hop.
     pub progress: f32,
-    /// How long this hop takes — stream hops are faster than walking.
+    /// How long this hop takes — stream hops are faster than walking,
+    /// flights over logs slower.
     duration: f32,
     /// The cell committed when the hop lands.
     to_cell: (u32, u32),
+    /// A flight over a fallen log: the hop arcs and she grows mid-air.
+    flight: bool,
 }
 
 /// The duck's completed cells, oldest first — the trail ducklings follow.
@@ -139,6 +153,7 @@ fn pad_direction(pads: &Query<&Gamepad>) -> Option<Direction> {
 fn hop(
     time: Res<Time>,
     maze_res: Res<MazeRes>,
+    clutch: Res<Clutch>,
     mut sfx: MessageWriter<SfxEvent>,
     mut commands: Commands,
     mover: Single<
@@ -159,15 +174,20 @@ fn hop(
     if let Some(mut hop) = hop {
         hop.progress += time.delta_secs() / hop.duration;
         if hop.progress < 1.0 {
-            transform.translation = hop
-                .from
-                .lerp(hop.to, hop.progress)
-                .extend(transform.translation.z);
+            let mut at = hop.from.lerp(hop.to, hop.progress);
+            // A flight arcs over its log — she rises, grows, and settles.
+            if hop.flight {
+                let lift = (hop.progress * core::f32::consts::PI).sin();
+                at.y += lift * FLIGHT_ARC;
+                transform.scale = Vec3::splat(1.0 + lift * FLIGHT_SCALE);
+            }
+            transform.translation = at.extend(transform.translation.z);
             return;
         }
         // Land: commit the cell, record the trail, cap the history.
         let from_flow = maze_res.maze.flow_at(duck.cell.0, duck.cell.1).is_some();
         transform.translation = hop.to.extend(transform.translation.z);
+        transform.scale = Vec3::ONE;
         duck.cell = hop.to_cell;
         history.0.push(hop.to_cell);
         if history.0.len() > HISTORY_CAP {
@@ -223,6 +243,22 @@ fn hop(
         sfx.write(SfxEvent::Bump);
         return;
     }
+    // A fallen log bars the way when the clutch is in tow — but mum alone
+    // spreads her wings and flies it: a slower, arcing hop with a flutter.
+    let flight = maze_res.maze.is_logged(x as i32, y as i32, dir);
+    if flight {
+        if clutch.collected > 0 {
+            sfx.write(SfxEvent::Bump);
+            if manual.is_none() && flow.is_none() {
+                // The blocked step came from the click-walk plan; every
+                // step behind it is stale now.
+                plan.queue.clear();
+                plan.target = None;
+            }
+            return;
+        }
+        sfx.write(SfxEvent::Flutter);
+    }
     let (dx, dy) = dir.delta();
     let to_cell = ((x as i32 + dx) as u32, (y as i32 + dy) as u32);
     let cells = (maze_res.maze.width(), maze_res.maze.height());
@@ -232,8 +268,9 @@ fn hop(
         from: transform.translation.xy(),
         to: cell_world_pos(cells, to_cell, TILE_SIZE),
         progress: 0.0,
-        duration,
+        duration: if flight { FLIGHT_HOP_SECS } else { duration },
         to_cell,
+        flight,
     });
 }
 
@@ -253,6 +290,7 @@ fn facing_angle(dir: Direction) -> f32 {
 fn pointer_walk(
     clicks: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
+    clutch: Res<Clutch>,
     mut sfx: MessageWriter<SfxEvent>,
     mut commands: Commands,
     window: Single<&Window>,
@@ -277,9 +315,11 @@ fn pointer_walk(
     let cells = (maze_res.maze.width(), maze_res.maze.height());
     let cell = world_to_cell(cells, world);
     let (duck_entity, duck, mut plan) = target.into_inner();
-    let steps = walk_plan(&maze_res.maze, duck.cell, cell);
+    // A plan never crosses a log she couldn't fly with the clutch aboard —
+    // the click refuses on the spot, like a hedge.
+    let steps = walk_plan(&maze_res.maze, duck.cell, cell, clutch.collected == 0);
     if steps.is_empty() && cell != duck.cell {
-        // Straight into a hedge: refuse on the spot.
+        // Straight into a hedge (or an unflyable log): refuse on the spot.
         sfx.write(SfxEvent::Bump);
         commands.entity(duck_entity).insert(HeadShake::default());
         plan.queue.clear();
@@ -325,8 +365,9 @@ fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
 
 /// The straight-corridor hops from `from` toward `target`: the dominant
 /// axis only, as far as the target along that axis, truncated at the first
-/// hedge — a click never navigates the duck around corners.
-fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction> {
+/// hedge — a click never navigates the duck around corners. With the
+/// clutch aboard (`can_fly` false) a fallen log bars the walk like a hedge.
+fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32), can_fly: bool) -> Vec<Direction> {
     let dx = target.0 as i32 - from.0 as i32;
     let dy = target.1 as i32 - from.1 as i32;
     let (dir, steps) = if dx.abs() >= dy.abs() {
@@ -351,7 +392,7 @@ fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction
     let mut plan = Vec::new();
     let (mut x, mut y) = (from.0 as i32, from.1 as i32);
     for _ in 0..steps {
-        if !maze.is_open(x, y, dir) {
+        if !maze.is_open(x, y, dir) || (!can_fly && maze.is_logged(x, y, dir)) {
             break;
         }
         let (dx, dy) = dir.delta();
@@ -387,7 +428,7 @@ mod tests {
             let (dx, dy) = dir.delta();
             let run = open_run(&maze, dir);
             let target = ((2 + dx * 5).max(0) as u32, (2 + dy * 5).max(0) as u32);
-            let plan = walk_plan(&maze, (2, 2), target);
+            let plan = walk_plan(&maze, (2, 2), target, true);
             assert_eq!(plan.len(), run as usize, "run {dir:?}");
             assert!(plan.iter().all(|&d| d == dir), "run {dir:?}");
         }
@@ -397,16 +438,53 @@ mod tests {
     fn walk_plans_take_the_dominant_axis_only() {
         let maze = Maze::generate(9, 5, 3, 0.0);
         // A diagonal click never turns a corner: one axis only is walked.
-        let plan = walk_plan(&maze, (4, 2), (6, 3));
+        let plan = walk_plan(&maze, (4, 2), (6, 3), true);
         assert!(plan.iter().all(|&d| d == Direction::East));
-        let plan = walk_plan(&maze, (4, 2), (5, 5));
+        let plan = walk_plan(&maze, (4, 2), (5, 5), true);
         assert!(plan.iter().all(|&d| d == Direction::North));
     }
 
     #[test]
     fn clicking_the_duck_plans_nothing() {
         let maze = Maze::generate(5, 5, 1, 0.0);
-        assert!(walk_plan(&maze, (2, 2), (2, 2)).is_empty());
+        assert!(walk_plan(&maze, (2, 2), (2, 2), true).is_empty());
+    }
+
+    #[test]
+    fn walk_plans_cross_a_log_only_when_flying() {
+        // Some seed or another lays a log across a corridor; a click onto
+        // the cell across it flies when mum is solo and stops short when
+        // the clutch rides.
+        for seed in 0..20u64 {
+            let maze = Maze::with_obstacles(11, 9, seed, 0.2, 0, 3);
+            let Some((from, dir)) = logged_passage(&maze) else {
+                continue;
+            };
+            let (dx, dy) = dir.delta();
+            let target = ((from.0 as i32 + dx) as u32, (from.1 as i32 + dy) as u32);
+            let flying = walk_plan(&maze, from, target, true);
+            assert_eq!(flying, vec![dir], "solo mum flies the log");
+            assert!(
+                walk_plan(&maze, from, target, false).is_empty(),
+                "the clutch stops short of the log"
+            );
+            return;
+        }
+        panic!("no seed in 0..20 laid a log to plan across");
+    }
+
+    /// The first logged passage found, as (west/south cell, direction).
+    fn logged_passage(maze: &Maze) -> Option<((u32, u32), Direction)> {
+        for dir in [Direction::East, Direction::North] {
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    if maze.is_logged(x as i32, y as i32, dir) {
+                        return Some(((x, y), dir));
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[test]

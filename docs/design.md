@@ -42,6 +42,16 @@ clutch in tow.
   every dry cell reachable, and able to get back — so a one-way stream can
   never seal a pocket; an unsolvable seed retries with a salt (the
   escalation-ladder pattern).
+- Fallen logs. From level index 2, `1 + (n-2)/4` capped at 3 logs lie
+  across open passages (never across a stream, never doubled up). Mum
+  alone can fly one — a slower, arcing hop (`FLIGHT_HOP_SECS`) with a
+  flutter and a size-up mid-air — but with ducklings in tow a log is
+  just a wall, and a click-walk refuses one the same way it refuses a
+  hedge. Generation therefore keeps a log only where the walk graph
+  (logs as walls, streams one-way) stays strongly connected from the
+  start: every dry cell reachable on foot, so the clutch is never asked
+  to fly. On a barely-braided maze most passages are bridges and logs
+  are sparse; loopier ponds fit their full count.
 - Level flow. Reaching the exit with the full clutch completes the level.
   The next level's maze grows; seeds derive from the run seed plus the level
   index, so a run is reproducible from its seed.
@@ -72,6 +82,9 @@ input that opened a screen cannot also dismiss it.
   out-of-range head shake's duration, peak yaw swing (radians) and wags.
 - `STREAM_HOP_SECS = 0.07` — duration of one stream-carried hop (the
   current is roughly double walking speed).
+- `FLIGHT_HOP_SECS = 0.24`, `FLIGHT_ARC = 16.0`, `FLIGHT_SCALE = 0.3` —
+  the flight over a fallen log: duration, peak arc height (pixels) and
+  peak mid-air size gain.
 - `CONFIRM_DEBOUNCE_SECS = 0.3` — how long after a screen appears before
   confirm input is heeded.
 - Difficulty curves (index `n`, zero-based; shared growth `+2n` width,
@@ -79,7 +92,7 @@ input that opened a screen cannot also dismiss it.
   - Pond: 5×5 base, `1+n` ducklings, braid `0.4`.
   - Meadow: 7×5 base, `2+n` ducklings, braid `0.2`.
   - Marsh: 9×7 base, `3+n` ducklings, braid `0.05`.
-- `TITLE_TILE_SIZE = 24.0` — the lettering map's tile size (gameplay is
+- `TITLE_TILE_SIZE = 20.0` — the lettering map's tile size (gameplay is
   `TILE_SIZE = 40.0`).
 
 ## Audio
@@ -91,7 +104,8 @@ loops continuously; effects are fire-and-forget one-shots.
 | --- | --- | --- |
 | Hop | soft tick | one per completed hop |
 | Pickup | rising chirp | playback speed `1.0 + 0.06 × index` per clutch position |
-| Bump | low thud | hedge collision |
+| Bump | low thud | hedge collision, or a log with the clutch aboard |
+| Flutter | wingbeat flutter | mum taking off over a fallen log |
 | Level complete | bell arpeggio fanfare | on the complete overlay |
 
 Volumes: music `0.6`, effects `0.9` (per-playback, set in `audio.rs`).
@@ -100,7 +114,12 @@ Volumes: music `0.6`, effects `0.9` (per-playback, set in `audio.rs`).
 
 - `crates/maze`: recursive backtracker on a rectangular cell grid, then
   braiding — a `braid` share of dead ends opens one extra wall, creating
-  loops so the clutch can route around each other.
+  loops so the clutch can route around each other. Streams are carved
+  first (`with_streams`, salted ladder), then fallen logs (`place_logs`,
+  kept only where the walk gate holds) — `with_obstacles` composes both,
+  retrying salts when a maze is too tree-ish to host every log (stream
+  cells can absorb a braid's loops) and keeping the run with the most.
+  The ASCII example renders logs as `==`/`‖` across a passage.
 - Ducklings spawn on dead ends, farthest first (BFS from the start), padded
   with the next-most-distant cells when braiding leaves too few.
 - The exit is the cell farthest from the start.

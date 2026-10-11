@@ -16,6 +16,8 @@ pub struct LevelPlan {
     pub braid: f32,
     /// How many one-way stream runs the level carries.
     pub streams: u32,
+    /// How many fallen logs the level carries.
+    pub logs: u32,
 }
 
 /// The three maze difficulties, chosen on the title screen.
@@ -41,9 +43,15 @@ pub fn level_plan(index: u32, difficulty: Difficulty) -> LevelPlan {
         height: (base_h + index).min(17),
         ducklings: (base_ducklings + index as usize).min(12),
         braid,
-        // The first pond is dry; streams trickle in from the second.
+        // The first pond is dry; streams trickle in from the second, and
+        // fallen logs from the third.
         streams: if index >= 1 {
             (1 + index / 3).min(4)
+        } else {
+            0
+        },
+        logs: if index >= 2 {
+            (1 + (index - 2) / 4).min(3)
         } else {
             0
         },
@@ -182,5 +190,17 @@ mod tests {
         assert_eq!(b.width, a.width + 2);
         assert_eq!(b.height, a.height + 1);
         assert_eq!(b.ducklings, a.ducklings + 1);
+    }
+
+    #[test]
+    fn logs_arrive_after_the_streams() {
+        // The first two ponds are log-free; a log lands on the third and
+        // one more joins every fourth level after, capped at three.
+        assert_eq!(level_plan(0, Difficulty::Meadow).logs, 0);
+        assert_eq!(level_plan(1, Difficulty::Meadow).logs, 0);
+        assert_eq!(level_plan(2, Difficulty::Meadow).logs, 1);
+        assert_eq!(level_plan(6, Difficulty::Meadow).logs, 2);
+        assert_eq!(level_plan(10, Difficulty::Meadow).logs, 3);
+        assert_eq!(level_plan(50, Difficulty::Meadow).logs, 3);
     }
 }

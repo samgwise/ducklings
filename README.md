@@ -4,7 +4,9 @@ A cosy puzzle game: pick your pond, then guide a mother duck through
 procedurally generated mazes, collecting her ducklings into a trailing conga
 line and leading the whole clutch to the exit. One-way streams sweep
 anything on them downstream — ride them as fast-travel highways, hop out
-at junctions, and pluck swept ducklings as they pass.
+at junctions, and pluck swept ducklings as they pass. Fallen logs bar the
+clutch's way: mum can fly over one while she's still alone, but ducklings
+can't follow, so logs never guard the route home.
 
 Three difficulties shape the ponds: **Pond** (gentle loops), **Meadow**
 (the classic maze) and **Marsh** (dead ends and wits).

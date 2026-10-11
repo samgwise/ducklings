@@ -1,9 +1,9 @@
 //! Print an ASCII rendering of a generated maze: `+`/`-`/`|` hedges, `S`
-//! start, `E` exit, `d` dead end, `.` open cell, and stream flows as
-//! `> < ^ v` arrows.
+//! start, `E` exit, `d` dead end, `.` open cell, stream flows as
+//! `> < ^ v` arrows, and fallen logs as `==`/`‖` barring a passage.
 //!
 //! ```sh
-//! cargo run -p maze --example ascii_map [seed] [width] [height] [braid_percent] [streams]
+//! cargo run -p maze --example ascii_map [seed] [width] [height] [braid_percent] [streams] [logs]
 //! ```
 
 use maze::{Direction, Maze};
@@ -16,7 +16,8 @@ fn main() {
     let (seed, width, height) = (arg(0, 0), arg(1, 11) as u32, arg(2, 9) as u32);
     let braid = arg(3, 20) as f32 / 100.0;
     let streams = arg(4, 2) as u32;
-    let maze = Maze::with_streams(width, height, seed, braid, streams);
+    let logs = arg(5, 2) as u32;
+    let maze = Maze::with_obstacles(width, height, seed, braid, streams, logs);
     let distances = maze.distances_from((0, 0));
 
     // The exit is the farthest cell from the start, mirroring the game.
@@ -36,7 +37,9 @@ fn main() {
         for x in 0..width {
             print!(
                 "{}",
-                if maze.is_open(x as i32, y as i32, Direction::West) {
+                if maze.is_logged(x as i32, y as i32, Direction::West) {
+                    '‖'
+                } else if maze.is_open(x as i32, y as i32, Direction::West) {
                     ' '
                 } else {
                     '|'
@@ -72,7 +75,9 @@ fn main() {
         for x in 0..width {
             print!(
                 "+{}",
-                if maze.is_open(x as i32, y as i32, Direction::South) {
+                if maze.is_logged(x as i32, y as i32, Direction::South) {
+                    "=="
+                } else if maze.is_open(x as i32, y as i32, Direction::South) {
                     "  "
                 } else {
                     "--"
@@ -81,5 +86,5 @@ fn main() {
         }
         println!("+");
     }
-    println!("seed: {seed}  {width}x{height}  braid: {braid}  streams: {streams}");
+    println!("seed: {seed}  {width}x{height}  braid: {braid}  streams: {streams}  logs: {logs}");
 }

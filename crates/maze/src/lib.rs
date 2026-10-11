@@ -55,7 +55,8 @@ impl Direction {
 /// A maze on a `width x height` grid of cells. Open passages are stored as a
 /// per-cell bit mask; closed bits are hedges the duck cannot hop. Cells may
 /// also carry a one-way stream current: anything landing there is carried
-/// along the flow until the run ends.
+/// along the flow until the run ends. A passage may also be barred by a
+/// fallen log: the duck can fly over one while alone, but the clutch cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Maze {
     width: u32,
@@ -63,6 +64,9 @@ pub struct Maze {
     open: Vec<u8>,
     /// Per-cell stream flow, if any. Straight runs only — no cycles.
     currents: Vec<Option<Direction>>,
+    /// Per-cell bit mask of open passages a fallen log bars (symmetric:
+    /// both ends of a logged passage carry the bit).
+    logged: Vec<u8>,
 }
 
 impl Maze {
@@ -76,6 +80,7 @@ impl Maze {
             height,
             open: vec![0; (width * height) as usize],
             currents: vec![None; (width * height) as usize],
+            logged: vec![0; (width * height) as usize],
         };
         if width == 0 || height == 0 {
             return maze;
@@ -131,6 +136,41 @@ impl Maze {
         }
     }
 
+    /// Generate a maze with streams *and* fallen logs: the stream-carved,
+    /// solvability-gated maze from [`Maze::with_streams`], then logs laid
+    /// across open dry passages. Logs bar the clutch's way — mum alone can
+    /// fly them — so a log is kept only when the *walk* graph (logs as
+    /// walls, streams one-way) stays strongly connected from `(0, 0)`:
+    /// every dry cell still reachable on foot. A maze too short of loops
+    /// to host every log is set aside and the next salt tried — the run
+    /// with the most logs wins — so the result always passes the walk
+    /// gate, with as close to `log_count` logs as it could hold.
+    pub fn with_obstacles(
+        width: u32,
+        height: u32,
+        seed: u64,
+        braid: f32,
+        stream_count: u32,
+        log_count: u32,
+    ) -> Self {
+        if log_count == 0 {
+            return Self::with_streams(width, height, seed, braid, stream_count);
+        }
+        let mut best = None;
+        for salt in 0..8u64 {
+            let mut maze = Self::with_streams(width, height, seed ^ salt, braid, stream_count);
+            maze.place_logs(SmallRng::seed_from_u64(seed ^ salt ^ 0x106), log_count);
+            let placed = maze.log_count();
+            if placed == log_count {
+                return maze;
+            }
+            if best.is_none() || best.as_ref().is_some_and(|(_, n)| placed > *n) {
+                best = Some((maze, placed));
+            }
+        }
+        best.map(|(maze, _)| maze).expect("at least one round ran")
+    }
+
     /// Maze width in cells.
     pub fn width(&self) -> u32 {
         self.width
@@ -150,6 +190,18 @@ impl Maze {
             return false;
         }
         self.open[self.index(x as u32, y as u32)] & dir.bit() != 0
+    }
+
+    /// Whether a fallen log bars the passage toward `dir` from cell
+    /// `(x, y)`. Only ever true where `is_open` is; out-of-bounds reads as
+    /// unlogged (the hedge does the blocking there).
+    pub fn is_logged(&self, x: i32, y: i32, dir: Direction) -> bool {
+        let (dx, dy) = dir.delta();
+        let (nx, ny) = (x + dx, y + dy);
+        if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+            return false;
+        }
+        self.logged[self.index(x as u32, y as u32)] & dir.bit() != 0
     }
 
     /// The stream flow at cell `(x, y)`, if any.
@@ -182,6 +234,16 @@ impl Maze {
                 return (next.0 as u32, next.1 as u32);
             }
         }
+    }
+
+    /// The number of fallen logs in the maze — each logged passage
+    /// carries its bit on both cell ends, so the popcount halves.
+    fn log_count(&self) -> u32 {
+        self.logged
+            .iter()
+            .map(|bits| bits.count_ones())
+            .sum::<u32>()
+            / 2
     }
 
     /// Cells with exactly one open passage.
@@ -333,6 +395,44 @@ impl Maze {
         self.fill_gaps();
     }
 
+    /// Lay up to `count` fallen logs across open passages. A log never
+    /// touches a stream cell at either end — the current flows unbroken —
+    /// and never doubles up on a passage already logged. Each log is kept
+    /// only if the walk graph stays strongly connected with it in place
+    /// (a log on a bridge would strand a pocket the clutch can't reach);
+    /// rejected spots are undone and others tried. Symmetric: both ends
+    /// of the passage carry the bit, like a carved passage.
+    fn place_logs(&mut self, mut rng: SmallRng, count: u32) {
+        let mut placed = 0;
+        let mut attempts = 0;
+        while placed < count && attempts < 200 {
+            attempts += 1;
+            let x = rng.random_range(0..self.width);
+            let y = rng.random_range(0..self.height);
+            let dir = Direction::ALL[rng.random_range(0..4)];
+            let Some((nx, ny)) = self.neighbour(x, y, dir) else {
+                continue;
+            };
+            if !self.is_open(x as i32, y as i32, dir)
+                || self.is_logged(x as i32, y as i32, dir)
+                || self.flow_at(x, y).is_some()
+                || self.flow_at(nx, ny).is_some()
+            {
+                continue;
+            }
+            let here = self.index(x, y);
+            let there = self.index(nx, ny);
+            self.logged[here] |= dir.bit();
+            self.logged[there] |= dir.opposite().bit();
+            if self.dry_strongly_connected_from((0, 0)) {
+                placed += 1;
+            } else {
+                self.logged[here] &= !dir.bit();
+                self.logged[there] &= !dir.opposite().bit();
+            }
+        }
+    }
+
     /// Fill one-cell dry gaps between two stream runs flowing the same
     /// direction — a rider let off into a gap would stop dead mid-stream.
     /// Filling cascades until no same-direction gaps remain, merging the
@@ -374,7 +474,8 @@ impl Maze {
         }
     }
 
-    /// The movement graph over dry cells: walking edges both ways, plus
+    /// The movement graph over dry cells: walking edges both ways (a
+    /// fallen log bars the walk — the clutch cannot cross it), plus
     /// one-way ride edges — from a dry cell beside a stream, entering the
     /// current sweeps you downstream past each run cell (hop-out points
     /// at every side branch you pass) until the let-off.
@@ -387,7 +488,9 @@ impl Maze {
                 }
                 let from = self.index(x, y);
                 for dir in Direction::ALL {
-                    if !self.is_open(x as i32, y as i32, dir) {
+                    if !self.is_open(x as i32, y as i32, dir)
+                        || self.is_logged(x as i32, y as i32, dir)
+                    {
                         continue;
                     }
                     let (nx, ny) = self
@@ -622,6 +725,98 @@ mod tests {
     fn stream_generation_is_deterministic() {
         let a = Maze::with_streams(11, 9, 42, 0.2, 3);
         let b = Maze::with_streams(11, 9, 42, 0.2, 3);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn logs_bar_open_passages_symmetrically() {
+        for seed in 0..10u64 {
+            let maze = Maze::with_obstacles(13, 11, seed, 0.2, 2, 3);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    for dir in Direction::ALL {
+                        let logged = maze.is_logged(x as i32, y as i32, dir);
+                        assert!(
+                            !logged || maze.is_open(x as i32, y as i32, dir),
+                            "a log only bars an open passage at {x},{y} {dir:?}"
+                        );
+                        let neighbour = maze.neighbour(x, y, dir);
+                        let back = neighbour.is_some_and(|(nx, ny)| {
+                            maze.is_logged(nx as i32, ny as i32, dir.opposite())
+                        });
+                        assert_eq!(
+                            logged, back,
+                            "the log at {x},{y} {dir:?} agrees with its neighbour"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn logs_never_lie_across_a_stream() {
+        for seed in 0..10u64 {
+            let maze = Maze::with_obstacles(13, 11, seed, 0.2, 3, 3);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    for dir in Direction::ALL {
+                        if !maze.is_logged(x as i32, y as i32, dir) {
+                            continue;
+                        }
+                        let (nx, ny) = maze
+                            .neighbour(x, y, dir)
+                            .expect("a logged passage is in bounds");
+                        assert!(
+                            maze.flow_at(x, y).is_none() && maze.flow_at(nx, ny).is_none(),
+                            "the log at {x},{y} {dir:?} touches no stream cell"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn logs_stay_within_the_count() {
+        for seed in 0..10u64 {
+            let maze = Maze::with_obstacles(13, 11, seed, 0.2, 2, 3);
+            assert!(maze.log_count() <= 3, "at most the asked logs, seed {seed}");
+        }
+        // A fully braided maze has no bridges — every passage lies on a
+        // loop, so every log keeps the walk graph connected and all three
+        // find a spot.
+        let maze = Maze::with_obstacles(13, 11, 0, 1.0, 0, 3);
+        assert_eq!(maze.log_count(), 3);
+    }
+
+    #[test]
+    fn logs_fill_their_count_on_a_loopy_maze() {
+        // With the salt retries, even a stream-carved Meadow-like maze
+        // fits its asked logs.
+        for seed in 0..10u64 {
+            let maze = Maze::with_obstacles(13, 11, seed, 0.2, 2, 3);
+            assert_eq!(maze.log_count(), 3, "all logs placed at seed {seed}");
+        }
+    }
+
+    #[test]
+    fn logged_mazes_stay_walkable_by_the_clutch() {
+        // The gate: logs bar the walk, so every dry cell must remain
+        // strongly connected without ever flying over a log.
+        for seed in 0..20u64 {
+            let maze = Maze::with_obstacles(13, 11, seed, 0.2, 3, 3);
+            assert!(
+                maze.dry_strongly_connected_from((0, 0)),
+                "walk graph strongly connected at seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn obstacle_generation_is_deterministic() {
+        let a = Maze::with_obstacles(11, 9, 42, 0.2, 2, 2);
+        let b = Maze::with_obstacles(11, 9, 42, 0.2, 2, 2);
         assert_eq!(a, b);
     }
 
