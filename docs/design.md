@@ -34,11 +34,16 @@ clutch in tow.
 
 ## Screens
 
-Screens (the level-complete overlay today; title and pause later) are
-phases of the one `GamePhase` state machine with shared idioms in
-`crates/game/src/menus.rs`: the overlay panel builder, the confirm input
+Screens are phases of the one `GamePhase` state machine with shared idioms
+in `crates/game/src/menus.rs`: the overlay panel builder, the confirm input
 (Enter/Space, pad A, or a tap) and a `CONFIRM_DEBOUNCE_SECS` gate so the
 input that opened a screen cannot also dismiss it.
+
+- **Title** (the boot phase): a decorative lettering map spelling "Ooh
+  Ducklings!" (a hand-drawn pixel font in `glyphs.rs`, rendered at
+  `TITLE_TILE_SIZE`) behind three difficulty buttons — Pond / Meadow /
+  Marsh. Up/down + confirm or click/tap chooses; choosing builds the first
+  pond and sweeps the lettering away.
 
 ## Tuning values
 
@@ -53,8 +58,13 @@ input that opened a screen cannot also dismiss it.
   out-of-range head shake's duration, peak yaw swing (radians) and wags.
 - `CONFIRM_DEBOUNCE_SECS = 0.3` — how long after a screen appears before
   confirm input is heeded.
-- Level curve (index `n`, zero-based): width `7 + 2n` capped at 25, height
-  `5 + n` capped at 17, ducklings `2 + n` capped at 12, braid `0.2`.
+- Difficulty curves (index `n`, zero-based; shared growth `+2n` width,
+  `+n` height, `+n` ducklings; caps 25 / 17 / 12):
+  - Pond: 5×5 base, `1+n` ducklings, braid `0.4`.
+  - Meadow: 7×5 base, `2+n` ducklings, braid `0.2`.
+  - Marsh: 9×7 base, `3+n` ducklings, braid `0.05`.
+- `TITLE_TILE_SIZE = 24.0` — the lettering map's tile size (gameplay is
+  `TILE_SIZE = 40.0`).
 
 ## Audio
 

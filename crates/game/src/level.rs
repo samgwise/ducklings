@@ -16,20 +16,38 @@ pub struct LevelPlan {
     pub braid: f32,
 }
 
+/// The three maze difficulties, chosen on the title screen.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Difficulty {
+    Pond,
+    #[default]
+    Meadow,
+    Marsh,
+}
+
 /// The difficulty curve: each level's maze grows and gains a duckling.
-pub fn level_plan(index: u32) -> LevelPlan {
+/// Growth and caps are shared; the bases and braid carry the challenge —
+/// a lower braid leaves more dead-end traps, a higher one loops more.
+pub fn level_plan(index: u32, difficulty: Difficulty) -> LevelPlan {
+    let (base_w, base_h, base_ducklings, braid) = match difficulty {
+        Difficulty::Pond => (5u32, 5u32, 1usize, 0.4),
+        Difficulty::Meadow => (7, 5, 2, 0.2),
+        Difficulty::Marsh => (9, 7, 3, 0.05),
+    };
     LevelPlan {
-        width: (7 + 2 * index).min(25),
-        height: (5 + index).min(17),
-        ducklings: (2 + index as usize).min(12),
-        braid: 0.2,
+        width: (base_w + 2 * index).min(25),
+        height: (base_h + index).min(17),
+        ducklings: (base_ducklings + index as usize).min(12),
+        braid,
     }
 }
 
-/// How the app divides its time: the live level, or the complete overlay.
+/// How the app divides its time: the title screen, the live level, or the
+/// complete overlay.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GamePhase {
     #[default]
+    Title,
     Playing,
     Complete,
 }
@@ -99,12 +117,14 @@ fn debug_complete_level(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextSt
 
 /// Advance the level index and build the next pond. Runs on exit from the
 /// Complete phase; the new entities land before the next Playing frame.
+#[allow(clippy::too_many_arguments)]
 fn rebuild_level(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut level: ResMut<LevelIndex>,
+    difficulty: Res<Difficulty>,
     seed: Res<RunSeed>,
     finished: Query<Entity, With<LevelEntity>>,
 ) {
@@ -112,7 +132,7 @@ fn rebuild_level(
         commands.entity(entity).despawn();
     }
     level.0 += 1;
-    let plan = level_plan(level.0);
+    let plan = level_plan(level.0, *difficulty);
     build_level(
         &mut commands,
         &mut images,
@@ -121,4 +141,38 @@ fn rebuild_level(
         &plan,
         seed.0.wrapping_add(level.0 as u64),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn difficulties_start_at_their_bases() {
+        let pond = level_plan(0, Difficulty::Pond);
+        assert_eq!((pond.width, pond.height), (5, 5));
+        assert_eq!(pond.ducklings, 1);
+        assert_eq!(pond.braid, 0.4);
+        let meadow = level_plan(0, Difficulty::Meadow);
+        assert_eq!((meadow.width, meadow.height), (7, 5));
+        assert_eq!(meadow.ducklings, 2);
+        assert_eq!(meadow.braid, 0.2);
+        let marsh = level_plan(0, Difficulty::Marsh);
+        assert_eq!((marsh.width, marsh.height), (9, 7));
+        assert_eq!(marsh.ducklings, 3);
+        assert_eq!(marsh.braid, 0.05);
+    }
+
+    #[test]
+    fn curves_grow_and_cap() {
+        // Deep in the curve every cap has bitten.
+        let plan = level_plan(50, Difficulty::Meadow);
+        assert_eq!((plan.width, plan.height, plan.ducklings), (25, 17, 12));
+        // Before the caps, each level adds its increment.
+        let a = level_plan(3, Difficulty::Pond);
+        let b = level_plan(4, Difficulty::Pond);
+        assert_eq!(b.width, a.width + 2);
+        assert_eq!(b.height, a.height + 1);
+        assert_eq!(b.ducklings, a.ducklings + 1);
+    }
 }

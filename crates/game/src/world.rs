@@ -1,7 +1,10 @@
 //! Level construction: generate a braided maze, materialise it as a tilemap
 //! (cells as floor, passages carved through, everything else hedge), spawn
-//! the duck, her waiting ducklings and the exit mat. The tile atlas is
-//! procedural so the prototype needs no art assets.
+//! the duck, her waiting ducklings and the exit mat — plus the decorative
+//! title lettering map shown while the difficulty is chosen. The tile atlas
+//! is procedural so the prototype needs no art assets.
+
+use std::collections::HashSet;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
@@ -14,10 +17,22 @@ use maze::{Direction, Maze};
 
 use crate::duck::{BufferedMove, Duck, PathHistory, WalkPlan};
 use crate::ducklings::{Clutch, Duckling, Waiting, follow_step};
-use crate::level::{LevelIndex, RunSeed, level_plan};
+use crate::glyphs::title_lettering;
+use crate::level::{Difficulty, GamePhase, RunSeed, level_plan};
 
 /// Size of a single tile in world units (pixels).
 pub const TILE_SIZE: f32 = 40.0;
+
+/// Tile size of the title lettering map — smaller than gameplay so the
+/// whole banner fits the viewport.
+const TITLE_TILE_SIZE: f32 = 20.0;
+/// How far the lettering map sits above the screen centre, leaving the
+/// lower third for the difficulty buttons.
+const TITLE_MAP_LIFT: f32 = 95.0;
+/// The lettering map's colours — plain solid tiles: cream corridors on a
+/// dark-green hedge, no texture noise, so each character reads cleanly.
+const TITLE_LETTER_COLOUR: Color = Color::srgb(0.96, 0.92, 0.84);
+const TITLE_HEDGE_COLOUR: Color = Color::srgb(0.20, 0.33, 0.16);
 
 /// Exponential smoothing rate for camera follow.
 const CAMERA_SMOOTHING: f32 = 6.0;
@@ -27,6 +42,9 @@ const FLOOR_ATLAS_INDEX: u32 = 0;
 const WALL_ATLAS_INDEX: u32 = 1;
 const EXIT_ATLAS_INDEX: u32 = 2;
 const ATLAS_TILES: u32 = 3;
+/// Atlas columns of the title map's plain atlas: letter, hedge.
+const LETTER_ATLAS_INDEX: u32 = 0;
+const TITLE_HEDGE_ATLAS_INDEX: u32 = 1;
 
 /// The duck's colour — white, with an orange beak child mesh.
 const DUCK_COLOUR: Color = Color::srgb(0.99, 0.98, 0.96);
@@ -57,31 +75,93 @@ pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(TilemapPlugin)
-            .add_systems(Startup, setup)
-            .add_systems(Update, camera_follow);
+        app.init_resource::<Clutch>()
+            .add_plugins(TilemapPlugin)
+            .add_systems(Startup, (setup, build_title_pond))
+            .add_systems(OnExit(GamePhase::Title), build_first_pond)
+            .add_systems(Update, camera_follow.run_if(in_state(GamePhase::Playing)));
     }
 }
 
-/// Startup: spawn the camera and build level 0.
-fn setup(
+/// Startup: just the camera — the first pond waits for the title screen.
+fn setup(mut commands: Commands) {
+    commands.spawn((MainCamera, Camera2d, Transform::from_xyz(0.0, 0.0, 1000.0)));
+}
+
+/// Leaving the title: sweep the lettering map away and build level 0 from
+/// the chosen difficulty.
+fn build_first_pond(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    level: Res<LevelIndex>,
+    difficulty: Res<Difficulty>,
     seed: Res<RunSeed>,
+    existing: Query<Entity, With<LevelEntity>>,
 ) {
-    commands.spawn((MainCamera, Camera2d, Transform::from_xyz(0.0, 0.0, 1000.0)));
-    let plan = level_plan(level.0);
+    for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+    let plan = level_plan(0, *difficulty);
     build_level(
         &mut commands,
         &mut images,
         &mut meshes,
         &mut materials,
         &plan,
-        seed.0.wrapping_add(level.0 as u64),
+        seed.0,
     );
+}
+
+/// Spawn the decorative "Ooh Ducklings!" lettering map — the title
+/// screen's backdrop. Open corridors spell the words; the rest is hedge.
+fn build_title_pond(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let ((cols, rows), ink) = title_lettering();
+    let ink: HashSet<(u32, u32)> = ink.into_iter().collect();
+    let atlas: Handle<Image> = images.add(build_title_atlas(TITLE_TILE_SIZE));
+    let tilemap_entity = commands.spawn_empty().id();
+    let mut storage = TileStorage::empty(TilemapSize { x: cols, y: rows });
+    for ty in 0..rows {
+        for tx in 0..cols {
+            // The crate renders tile rows bottom-up; the font is indexed
+            // top-down — flip the row so the words read upright.
+            let kind = if ink.contains(&(tx, rows - 1 - ty)) {
+                LETTER_ATLAS_INDEX
+            } else {
+                TITLE_HEDGE_ATLAS_INDEX
+            };
+            let pos = TilePos { x: tx, y: ty };
+            let entity = commands
+                .spawn((
+                    LevelEntity,
+                    TileBundle {
+                        position: pos,
+                        texture_index: TileTextureIndex(kind),
+                        tilemap_id: TilemapId(tilemap_entity),
+                        ..Default::default()
+                    },
+                ))
+                .id();
+            storage.set(&pos, entity);
+        }
+    }
+    let tile_size = TilemapTileSize {
+        x: TITLE_TILE_SIZE,
+        y: TITLE_TILE_SIZE,
+    };
+    commands.entity(tilemap_entity).insert((
+        LevelEntity,
+        TilemapBundle {
+            grid_size: tile_size.into(),
+            size: TilemapSize { x: cols, y: rows },
+            storage,
+            texture: TilemapTexture::Single(atlas),
+            tile_size,
+            anchor: TilemapAnchor::Center,
+            transform: Transform::from_xyz(0.0, TITLE_MAP_LIFT, 0.0),
+            ..Default::default()
+        },
+    ));
 }
 
 /// Smoothly follow the duck.
@@ -340,6 +420,37 @@ pub fn cell_world_pos(map_cells: (u32, u32), cell: (u32, u32), tile_size: f32) -
         (map_cells.0 * 2 + 1, map_cells.1 * 2 + 1),
         (cell.0 * 2 + 1, cell.1 * 2 + 1),
         tile_size,
+    )
+}
+
+/// The title map's atlas: two plain solid tiles (letter, hedge) — the
+/// clean single expression of each character that the textured gameplay
+/// atlas would blur.
+fn build_title_atlas(tile_size: f32) -> Image {
+    let tile_px = tile_size as u32;
+    let columns = [TITLE_LETTER_COLOUR, TITLE_HEDGE_COLOUR];
+    let mut data = Vec::with_capacity((tile_px * 2 * tile_px * 4) as usize);
+    for _ in 0..tile_px {
+        for x in 0..tile_px * 2 {
+            let colour = columns[(x / tile_px) as usize].to_srgba();
+            data.extend_from_slice(&[
+                (colour.red * 255.0) as u8,
+                (colour.green * 255.0) as u8,
+                (colour.blue * 255.0) as u8,
+                255,
+            ]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: tile_px * 2,
+            height: tile_px,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     )
 }
 

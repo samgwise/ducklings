@@ -9,6 +9,7 @@
 pub mod audio;
 pub mod duck;
 pub mod ducklings;
+pub mod glyphs;
 pub mod hud;
 pub mod level;
 pub mod menus;

@@ -4,13 +4,14 @@
 use bevy::prelude::*;
 
 use crate::ducklings::Clutch;
-use crate::level::LevelIndex;
+use crate::level::{GamePhase, LevelIndex};
 
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
+            .add_systems(OnEnter(GamePhase::Playing), show_label)
             .add_systems(Update, update_label);
     }
 }
@@ -34,7 +35,14 @@ fn spawn_hud(mut commands: Commands) {
             ..default()
         },
         TextColor(Color::srgb(0.25, 0.2, 0.15)),
+        // Hidden until the first pond exists — the title screen is clean.
+        Visibility::Hidden,
     ));
+}
+
+/// The label appears once the first pond exists (idempotent per level).
+fn show_label(mut label: Single<&mut Visibility, With<LevelLabel>>) {
+    label.set_if_neq(Visibility::Visible);
 }
 
 /// Keep the label honest: level index (one-based on screen) and the clutch.
