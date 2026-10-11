@@ -14,6 +14,8 @@ pub struct LevelPlan {
     pub height: u32,
     pub ducklings: usize,
     pub braid: f32,
+    /// How many one-way stream runs the level carries.
+    pub streams: u32,
 }
 
 /// The three maze difficulties, chosen on the title screen.
@@ -39,6 +41,12 @@ pub fn level_plan(index: u32, difficulty: Difficulty) -> LevelPlan {
         height: (base_h + index).min(17),
         ducklings: (base_ducklings + index as usize).min(12),
         braid,
+        // The first pond is dry; streams trickle in from the second.
+        streams: if index >= 1 {
+            (1 + index / 3).min(4)
+        } else {
+            0
+        },
     }
 }
 

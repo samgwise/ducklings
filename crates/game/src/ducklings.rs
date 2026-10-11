@@ -4,7 +4,7 @@
 use bevy::prelude::*;
 
 use crate::audio::SfxEvent;
-use crate::duck::{Duck, PathHistory};
+use crate::duck::{Duck, PathHistory, STREAM_HOP_SECS};
 use crate::level::GamePhase;
 use crate::world::{MazeRes, TILE_SIZE, cell_world_pos};
 
@@ -24,9 +24,21 @@ pub struct Duckling {
     pub index: usize,
 }
 
-/// Still waiting in the maze; removed the moment mum hops onto the cell.
+/// Still waiting in the maze; removed the moment mum collects the
+/// duckling. Waiting ducklings caught in a stream get swept downstream.
 #[derive(Component)]
 pub struct Waiting;
+
+/// A waiting duckling mid flow-hop along a stream.
+#[derive(Component)]
+struct Swept {
+    from: Vec2,
+    to: Vec2,
+    /// The cell committed when the flow-hop completes.
+    to_cell: (u32, u32),
+    /// 0–1 through the flow-hop.
+    progress: f32,
+}
 
 /// How many ducklings are in the trail and how many the level holds.
 #[derive(Resource, Debug, Default)]
@@ -41,7 +53,7 @@ impl Plugin for DucklingsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (pickup, follow).run_if(in_state(GamePhase::Playing)),
+            (sweep, pickup, pluck, follow).run_if(in_state(GamePhase::Playing)),
         );
     }
 }
@@ -76,19 +88,90 @@ fn pickup(
         if duckling.cell != duck.cell {
             continue;
         }
-        let index = clutch.collected;
+        collect(&mut commands, entity, duckling.cell, clutch.collected);
         clutch.collected += 1;
-        commands
-            .entity(entity)
-            .remove::<Waiting>()
-            .insert(Duckling {
-                cell: duckling.cell,
-                index,
-            });
         // Each sibling in the line chirps a little brighter than the last.
         sfx.write(SfxEvent::Chirp {
-            speed: 1.0 + 0.06 * index as f32,
+            speed: 1.0 + 0.06 * clutch.collected as f32,
         });
+    }
+}
+
+/// A swept duckling's cell changed: if it passed onto or beside mum's
+/// cell — the well-timed pluck — it joins the trail.
+#[allow(clippy::type_complexity)]
+fn pluck(
+    mut commands: Commands,
+    duck: Single<&Duck>,
+    mut clutch: ResMut<Clutch>,
+    swept: Query<(Entity, &Duckling), (Changed<Duckling>, With<Waiting>)>,
+    mut sfx: MessageWriter<SfxEvent>,
+) {
+    for (entity, duckling) in swept.iter() {
+        let dx = (duckling.cell.0 as i32 - duck.cell.0 as i32).abs();
+        let dy = (duckling.cell.1 as i32 - duck.cell.1 as i32).abs();
+        if dx + dy > 1 {
+            continue;
+        }
+        collect(&mut commands, entity, duckling.cell, clutch.collected);
+        clutch.collected += 1;
+        sfx.write(SfxEvent::Chirp {
+            speed: 1.0 + 0.06 * clutch.collected as f32,
+        });
+    }
+}
+
+/// Collect a duckling into the trail at `index`.
+fn collect(commands: &mut Commands, entity: Entity, cell: (u32, u32), index: usize) {
+    commands
+        .entity(entity)
+        .remove::<Waiting>()
+        .insert(Duckling { cell, index });
+}
+
+/// Waiting ducklings caught in a stream get swept downstream, one fast
+/// flow-hop at a time, until the let-off deposits them on dry ground.
+fn sweep(
+    time: Res<Time>,
+    maze_res: Res<MazeRes>,
+    mut commands: Commands,
+    mut ducklings: Query<
+        (Entity, &mut Duckling, &mut Transform, Option<&mut Swept>),
+        With<Waiting>,
+    >,
+) {
+    for (entity, mut duckling, mut transform, swept) in ducklings.iter_mut() {
+        match swept {
+            Some(mut swept) => {
+                swept.progress += time.delta_secs() / STREAM_HOP_SECS;
+                if swept.progress >= 1.0 {
+                    transform.translation = swept.to.extend(transform.translation.z);
+                    duckling.cell = swept.to_cell;
+                    commands.entity(entity).remove::<Swept>();
+                } else {
+                    transform.translation = swept
+                        .from
+                        .lerp(swept.to, swept.progress)
+                        .extend(transform.translation.z);
+                }
+            }
+            None => {
+                if let Some(flow) = maze_res.maze.flow_at(duckling.cell.0, duckling.cell.1) {
+                    let (dx, dy) = flow.delta();
+                    let to_cell = (
+                        (duckling.cell.0 as i32 + dx) as u32,
+                        (duckling.cell.1 as i32 + dy) as u32,
+                    );
+                    let cells = (maze_res.maze.width(), maze_res.maze.height());
+                    commands.entity(entity).insert(Swept {
+                        from: transform.translation.xy(),
+                        to: cell_world_pos(cells, to_cell, TILE_SIZE),
+                        to_cell,
+                        progress: 0.0,
+                    });
+                }
+            }
+        }
     }
 }
 

@@ -53,12 +53,16 @@ impl Direction {
 }
 
 /// A maze on a `width x height` grid of cells. Open passages are stored as a
-/// per-cell bit mask; closed bits are hedges the duck cannot hop.
+/// per-cell bit mask; closed bits are hedges the duck cannot hop. Cells may
+/// also carry a one-way stream current: anything landing there is carried
+/// along the flow until the run ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Maze {
     width: u32,
     height: u32,
     open: Vec<u8>,
+    /// Per-cell stream flow, if any. Straight runs only — no cycles.
+    currents: Vec<Option<Direction>>,
 }
 
 impl Maze {
@@ -71,6 +75,7 @@ impl Maze {
             width,
             height,
             open: vec![0; (width * height) as usize],
+            currents: vec![None; (width * height) as usize],
         };
         if width == 0 || height == 0 {
             return maze;
@@ -103,6 +108,29 @@ impl Maze {
         maze
     }
 
+    /// Generate a maze and carve `stream_count` one-way stream runs.
+    /// Streams can seal dry cells off behind a one-way barrier, so the
+    /// result is gated: the movement graph — dry walking plus one-way
+    /// rides with junction exits and let-offs — must reach every dry cell
+    /// from `(0, 0)`. An unsolvable seed retries with a salted seed;
+    /// every few rounds the stream count relaxes by one, guaranteeing
+    /// termination (a dry maze is always solvable).
+    pub fn with_streams(width: u32, height: u32, seed: u64, braid: f32, stream_count: u32) -> Self {
+        let mut salt = 0u64;
+        let mut streams = stream_count;
+        loop {
+            let mut maze = Maze::generate(width, height, seed ^ salt, braid);
+            maze.carve_streams(SmallRng::seed_from_u64(seed ^ salt ^ 0x5EA7), streams);
+            if maze.dry_strongly_connected_from((0, 0)) {
+                return maze;
+            }
+            salt += 1;
+            if salt.is_multiple_of(4) && streams > 0 {
+                streams -= 1;
+            }
+        }
+    }
+
     /// Maze width in cells.
     pub fn width(&self) -> u32 {
         self.width
@@ -122,6 +150,38 @@ impl Maze {
             return false;
         }
         self.open[self.index(x as u32, y as u32)] & dir.bit() != 0
+    }
+
+    /// The stream flow at cell `(x, y)`, if any.
+    pub fn flow_at(&self, x: u32, y: u32) -> Option<Direction> {
+        if self.has_cell(x, y) {
+            self.currents[self.index(x, y)]
+        } else {
+            None
+        }
+    }
+
+    /// The cell one past the end of this cell's stream run — where the
+    /// current deposits whatever it carries. A dry cell lets off to itself.
+    pub fn let_off(&self, x: u32, y: u32) -> (u32, u32) {
+        let Some(dir) = self.flow_at(x, y) else {
+            return (x, y);
+        };
+        let mut cur = (x, y);
+        loop {
+            let (dx, dy) = dir.delta();
+            let next = (cur.0 as i32 + dx, cur.1 as i32 + dy);
+            let flowing = next.0 >= 0
+                && next.1 >= 0
+                && self.flow_at(next.0 as u32, next.1 as u32) == Some(dir);
+            if flowing {
+                cur = (next.0 as u32, next.1 as u32);
+            } else {
+                // The run's end: the let-off lies one cell past. Generation
+                // guarantees it is in bounds, open, and dry.
+                return (next.0 as u32, next.1 as u32);
+            }
+        }
     }
 
     /// Cells with exactly one open passage.
@@ -220,6 +280,196 @@ impl Maze {
             }
         }
     }
+
+    /// Carve up to `count` straight stream runs: each picks a random cell
+    /// (never the game's start corner) and direction, then follows open
+    /// passages for 2–5 cells without touching existing stream cells. The
+    /// run must end with an open, dry let-off one cell past its last cell.
+    fn carve_streams(&mut self, mut rng: SmallRng, count: u32) {
+        let mut placed = 0;
+        let mut attempts = 0;
+        while placed < count && attempts < 200 {
+            attempts += 1;
+            let x = rng.random_range(0..self.width);
+            let y = rng.random_range(0..self.height);
+            let dir = Direction::ALL[rng.random_range(0..4)];
+            let run_len = rng.random_range(2..=5);
+
+            let mut cells = vec![(x, y)];
+            let mut cur = (x, y);
+            for _ in 1..run_len {
+                let Some(next) = self.neighbour(cur.0, cur.1, dir) else {
+                    break;
+                };
+                if !self.is_open(cur.0 as i32, cur.1 as i32, dir)
+                    || self.flow_at(next.0, next.1).is_some()
+                    || next == (0, 0)
+                {
+                    break;
+                }
+                cells.push(next);
+                cur = next;
+            }
+            if cells.len() < 2 {
+                continue;
+            }
+            // The let-off: one cell past the run's end — in bounds, open,
+            // and dry, or the run is rejected.
+            let Some(let_off) = self.neighbour(cur.0, cur.1, dir) else {
+                continue;
+            };
+            if !self.is_open(cur.0 as i32, cur.1 as i32, dir)
+                || self.flow_at(let_off.0, let_off.1).is_some()
+                || let_off == (0, 0)
+            {
+                continue;
+            }
+            for &(cx, cy) in &cells {
+                let cell = self.index(cx, cy);
+                self.currents[cell] = Some(dir);
+            }
+            placed += 1;
+        }
+        self.fill_gaps();
+    }
+
+    /// Fill one-cell dry gaps between two stream runs flowing the same
+    /// direction — a rider let off into a gap would stop dead mid-stream.
+    /// Filling cascades until no same-direction gaps remain, merging the
+    /// runs into one continuous flow (whose let-off is the last run's).
+    fn fill_gaps(&mut self) {
+        loop {
+            let mut filled = false;
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    let Some(flow) = self.currents[self.index(x, y)] else {
+                        continue;
+                    };
+                    let (dx, dy) = flow.delta();
+                    let mid = (x as i32 + dx, y as i32 + dy);
+                    let beyond = (x as i32 + 2 * dx, y as i32 + 2 * dy);
+                    if mid.0 < 0
+                        || mid.1 < 0
+                        || mid.0 >= self.width as i32
+                        || mid.1 >= self.height as i32
+                        || beyond.0 < 0
+                        || beyond.1 < 0
+                        || beyond.0 >= self.width as i32
+                        || beyond.1 >= self.height as i32
+                    {
+                        continue;
+                    }
+                    let mid_i = self.index(mid.0 as u32, mid.1 as u32);
+                    if self.currents[mid_i].is_none()
+                        && self.flow_at(beyond.0 as u32, beyond.1 as u32) == Some(flow)
+                    {
+                        self.currents[mid_i] = Some(flow);
+                        filled = true;
+                    }
+                }
+            }
+            if !filled {
+                break;
+            }
+        }
+    }
+
+    /// The movement graph over dry cells: walking edges both ways, plus
+    /// one-way ride edges — from a dry cell beside a stream, entering the
+    /// current sweeps you downstream past each run cell (hop-out points
+    /// at every side branch you pass) until the let-off.
+    fn dry_edges(&self) -> Vec<(usize, usize)> {
+        let mut edges = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.flow_at(x, y).is_some() {
+                    continue;
+                }
+                let from = self.index(x, y);
+                for dir in Direction::ALL {
+                    if !self.is_open(x as i32, y as i32, dir) {
+                        continue;
+                    }
+                    let (nx, ny) = self
+                        .neighbour(x, y, dir)
+                        .expect("an open passage is in bounds");
+                    if self.flow_at(nx, ny).is_none() {
+                        edges.push((from, self.index(nx, ny)));
+                    } else {
+                        let flow = self.flow_at(nx, ny).expect("a stream cell flows");
+                        let mut cur = (nx, ny);
+                        loop {
+                            for side in Direction::ALL {
+                                if side == flow || side == flow.opposite() {
+                                    continue; // downstream is the current's job; upstream fights it
+                                }
+                                if !self.is_open(cur.0 as i32, cur.1 as i32, side) {
+                                    continue;
+                                }
+                                let (sx, sy) = self
+                                    .neighbour(cur.0, cur.1, side)
+                                    .expect("a side branch is in bounds");
+                                if self.flow_at(sx, sy).is_none() {
+                                    edges.push((from, self.index(sx, sy)));
+                                }
+                            }
+                            let (dx, dy) = flow.delta();
+                            let next = (cur.0 as i32 + dx, cur.1 as i32 + dy);
+                            let next = (next.0 as u32, next.1 as u32);
+                            if self.flow_at(next.0, next.1) == Some(flow) {
+                                cur = next;
+                            } else {
+                                edges.push((from, self.index(next.0, next.1)));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        edges
+    }
+
+    /// Whether the dry cells are strongly connected from `start`: every
+    /// dry cell reachable from the start, and the start reachable from
+    /// every dry cell (reachability in the graph and in its reverse).
+    /// A one-way stream must never seal a pocket the duck can't leave.
+    fn dry_strongly_connected_from(&self, start: (u32, u32)) -> bool {
+        if self.flow_at(start.0, start.1).is_some() {
+            return false;
+        }
+        let edges = self.dry_edges();
+        let reversed: Vec<(usize, usize)> = edges.iter().map(|&(a, b)| (b, a)).collect();
+        let dry_count = self.currents.iter().filter(|c| c.is_none()).count();
+        let start = self.index(start.0, start.1);
+        let node_count = self.currents.len();
+        Self::reaches(&edges, start, node_count, dry_count)
+            && Self::reaches(&reversed, start, node_count, dry_count)
+    }
+
+    /// Whether a BFS over `edges` from `start` visits `must_visit` nodes.
+    fn reaches(
+        edges: &[(usize, usize)],
+        start: usize,
+        node_count: usize,
+        must_visit: usize,
+    ) -> bool {
+        let mut visited = vec![false; node_count];
+        let mut queue = VecDeque::new();
+        visited[start] = true;
+        let mut seen = 1;
+        queue.push_back(start);
+        while let Some(n) = queue.pop_front() {
+            for &(a, b) in edges {
+                if a == n && !visited[b] {
+                    visited[b] = true;
+                    seen += 1;
+                    queue.push_back(b);
+                }
+            }
+        }
+        seen == must_visit
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +549,80 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn streams_are_straight_runs_with_a_dry_let_off() {
+        for seed in 0..10u64 {
+            let maze = Maze::with_streams(11, 9, seed, 0.2, 3);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    if maze.flow_at(x, y).is_some() {
+                        // Walking the flow must land on an open, dry
+                        // let-off — never cycle, never dump into a hedge.
+                        let let_off = maze.let_off(x, y);
+                        assert!(
+                            maze.flow_at(let_off.0, let_off.1).is_none(),
+                            "the let-off is dry at {x},{y}"
+                        );
+                    }
+                }
+            }
+            assert!(maze.flow_at(0, 0).is_none(), "the start corner never flows");
+        }
+    }
+
+    #[test]
+    fn stream_gaps_are_filled() {
+        // Two same-direction runs may not leave a one-cell dry gap — the
+        // filler merges them into one continuous flow.
+        for seed in 0..10u64 {
+            let maze = Maze::with_streams(13, 11, seed, 0.2, 4);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    let Some(flow) = maze.flow_at(x, y) else {
+                        continue;
+                    };
+                    let (dx, dy) = flow.delta();
+                    let mid = (x as i32 + dx, y as i32 + dy);
+                    let beyond = (x as i32 + 2 * dx, y as i32 + 2 * dy);
+                    if beyond.0 < 0
+                        || beyond.1 < 0
+                        || beyond.0 >= maze.width() as i32
+                        || beyond.1 >= maze.height() as i32
+                    {
+                        continue;
+                    }
+                    if maze.flow_at(beyond.0 as u32, beyond.1 as u32) == Some(flow) {
+                        assert!(
+                            maze.flow_at(mid.0 as u32, mid.1 as u32).is_some(),
+                            "a gap at {mid:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streams_solvability_gate_holds() {
+        // The constructor gates generation: the dry cells must be
+        // strongly connected — reachable from the start AND able to get
+        // back, so a one-way stream can never seal a pocket.
+        for seed in 0..20u64 {
+            let maze = Maze::with_streams(13, 11, seed, 0.2, 4);
+            assert!(
+                maze.dry_strongly_connected_from((0, 0)),
+                "dry cells strongly connected at seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_generation_is_deterministic() {
+        let a = Maze::with_streams(11, 9, 42, 0.2, 3);
+        let b = Maze::with_streams(11, 9, 42, 0.2, 3);
+        assert_eq!(a, b);
     }
 
     #[test]

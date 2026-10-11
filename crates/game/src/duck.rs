@@ -16,6 +16,10 @@ use crate::world::{MainCamera, MazeRes, TILE_SIZE, cell_world_pos};
 /// Duration of one hop, in seconds.
 pub const HOP_SECS: f32 = 0.15;
 
+/// Duration of one stream-carried hop, in seconds — the current is fast,
+/// roughly double walking speed.
+pub const STREAM_HOP_SECS: f32 = 0.07;
+
 /// Path history entries kept per level — long enough for any conga line.
 pub const HISTORY_CAP: usize = 512;
 
@@ -35,6 +39,8 @@ pub struct Hop {
     pub to: Vec2,
     /// 0–1 through the hop.
     pub progress: f32,
+    /// How long this hop takes — stream hops are faster than walking.
+    duration: f32,
     /// The cell committed when the hop lands.
     to_cell: (u32, u32),
 }
@@ -151,7 +157,7 @@ fn hop(
     let (entity, mut duck, mut transform, mut buffered, hop, mut history, mut plan) =
         mover.into_inner();
     if let Some(mut hop) = hop {
-        hop.progress += time.delta_secs() / HOP_SECS;
+        hop.progress += time.delta_secs() / hop.duration;
         if hop.progress < 1.0 {
             transform.translation = hop
                 .from
@@ -160,6 +166,7 @@ fn hop(
             return;
         }
         // Land: commit the cell, record the trail, cap the history.
+        let from_flow = maze_res.maze.flow_at(duck.cell.0, duck.cell.1).is_some();
         transform.translation = hop.to.extend(transform.translation.z);
         duck.cell = hop.to_cell;
         history.0.push(hop.to_cell);
@@ -168,22 +175,47 @@ fn hop(
         }
         commands.entity(entity).remove::<Hop>();
         sfx.write(SfxEvent::Hop);
-        // The walk ended short of the click: refuse in place.
-        if plan.queue.is_empty()
-            && let Some(target) = plan.target.take()
-            && duck.cell != target
-        {
-            sfx.write(SfxEvent::Bump);
-            commands.entity(entity).insert(HeadShake::default());
+        // Crossing the waterline either way gets a splash.
+        let to_flow = maze_res
+            .maze
+            .flow_at(hop.to_cell.0, hop.to_cell.1)
+            .is_some();
+        if from_flow != to_flow {
+            sfx.write(SfxEvent::Splash);
         }
     }
+    let flow = maze_res.maze.flow_at(duck.cell.0, duck.cell.1);
     // A manual press cancels any queued walk: latest intent wins.
-    let next = buffered.0.take().inspect(|_| {
+    let manual = buffered.0.take().inspect(|_| {
         plan.queue.clear();
         plan.target = None;
     });
-    let Some(dir) = next.or_else(|| plan.queue.pop_front()) else {
-        return;
+    let (dir, duration) = match (manual, flow) {
+        // On dry land the buffer or the click-walk plan drives.
+        (Some(dir), None) => (dir, HOP_SECS),
+        (None, None) => match plan.queue.pop_front() {
+            Some(dir) => (dir, HOP_SECS),
+            None => return,
+        },
+        // Riding: only an open side branch may hop out — never along the
+        // flow (the current is faster) nor back upstream (one-way water).
+        (Some(dir), Some(f))
+            if dir != f
+                && dir != f.opposite()
+                && maze_res
+                    .maze
+                    .is_open(duck.cell.0 as i32, duck.cell.1 as i32, dir) =>
+        {
+            (dir, HOP_SECS)
+        }
+        // Otherwise the current carries her — and sweeps away any queued
+        // walk, whose remaining steps are stale the moment she lands in
+        // the water.
+        (_, Some(f)) => {
+            plan.queue.clear();
+            plan.target = None;
+            (f, STREAM_HOP_SECS)
+        }
     };
     let (x, y) = duck.cell;
     if !maze_res.maze.is_open(x as i32, y as i32, dir) {
@@ -200,6 +232,7 @@ fn hop(
         from: transform.translation.xy(),
         to: cell_world_pos(cells, to_cell, TILE_SIZE),
         progress: 0.0,
+        duration,
         to_cell,
     });
 }

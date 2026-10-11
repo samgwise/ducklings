@@ -37,11 +37,16 @@ const TITLE_HEDGE_COLOUR: Color = Color::srgb(0.20, 0.33, 0.16);
 /// Exponential smoothing rate for camera follow.
 const CAMERA_SMOOTHING: f32 = 6.0;
 
-/// Atlas columns: cream floor, hedge wall, pink exit mat.
+/// Atlas columns: cream floor, hedge wall, pink exit mat, and four blue
+/// water tiles with a flow chevron pointing along the current.
 const FLOOR_ATLAS_INDEX: u32 = 0;
 const WALL_ATLAS_INDEX: u32 = 1;
 const EXIT_ATLAS_INDEX: u32 = 2;
-const ATLAS_TILES: u32 = 3;
+const WATER_EAST_ATLAS_INDEX: u32 = 3;
+const WATER_WEST_ATLAS_INDEX: u32 = 4;
+const WATER_NORTH_ATLAS_INDEX: u32 = 5;
+const WATER_SOUTH_ATLAS_INDEX: u32 = 6;
+const ATLAS_TILES: u32 = 7;
 /// Atlas columns of the title map's plain atlas: letter, hedge.
 const LETTER_ATLAS_INDEX: u32 = 0;
 const TITLE_HEDGE_ATLAS_INDEX: u32 = 1;
@@ -189,12 +194,12 @@ pub(crate) fn build_level(
     plan: &crate::level::LevelPlan,
     seed: u64,
 ) {
-    let maze = Maze::generate(plan.width, plan.height, seed, plan.braid);
+    let maze = Maze::with_streams(plan.width, plan.height, seed, plan.braid, plan.streams);
     let start = (0u32, 0u32);
     let cells = (plan.width, plan.height);
     // The exit is the farthest cell from the start.
     let distances = maze.distances_from(start);
-    let exit = farthest_cell(&distances, cells);
+    let exit = farthest_cell(&maze, &distances, cells);
     // Ducklings wait at dead ends, farthest first, padded with the next
     // most distant cells when braiding leaves too few dead ends.
     let spots = duckling_spots(&maze, start, exit, plan.ducklings);
@@ -316,13 +321,17 @@ pub(crate) fn build_level(
 }
 
 /// The reachable cell with the largest BFS distance (ties keep the first in
-/// row-major order).
-fn farthest_cell(distances: &[Option<u32>], cells: (u32, u32)) -> (u32, u32) {
+/// row-major order). Stream cells are skipped — the exit must be dry, or
+/// the duck would ride straight past it.
+fn farthest_cell(maze: &Maze, distances: &[Option<u32>], cells: (u32, u32)) -> (u32, u32) {
     let mut best = (0u32, 0u32);
     let mut best_steps = 0u32;
     for (i, steps) in distances.iter().enumerate() {
         let Some(steps) = steps else { continue };
         let cell = (i as u32 % cells.0, i as u32 / cells.0);
+        if maze.flow_at(cell.0, cell.1).is_some() {
+            continue;
+        }
         if *steps > best_steps {
             best = cell;
             best_steps = *steps;
@@ -376,28 +385,35 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
         (1, 1) => {
             if (tx / 2, ty / 2) == exit {
                 EXIT_ATLAS_INDEX
+            } else if let Some(flow) = maze.flow_at(tx / 2, ty / 2) {
+                water_atlas_index(flow)
             } else {
                 FLOOR_ATLAS_INDEX
             }
         }
         // Between cell (tx/2 - 1, ty/2) and (tx/2, ty/2): floor iff the
-        // west cell's east passage is carved.
+        // west cell's east passage is carved — and water, chevron along
+        // the flow, when that passage carries the current.
         (0, 1) if tx >= 1 && tx + 1 < tw => {
             let west = ((tx - 1) / 2, ty / 2);
-            if maze.is_open(west.0 as i32, west.1 as i32, Direction::East) {
-                FLOOR_ATLAS_INDEX
-            } else {
-                WALL_ATLAS_INDEX
+            match maze.flow_at(west.0, west.1) {
+                Some(Direction::East) => water_atlas_index(Direction::East),
+                _ if maze.is_open(west.0 as i32, west.1 as i32, Direction::East) => {
+                    FLOOR_ATLAS_INDEX
+                }
+                _ => WALL_ATLAS_INDEX,
             }
         }
         // Between cell (tx/2, ty/2 - 1) and (tx/2, ty/2): floor iff the
-        // south cell's north passage is carved.
+        // south cell's north passage is carved — water along the flow.
         (1, 0) if ty >= 1 && ty + 1 < th => {
             let south = (tx / 2, (ty - 1) / 2);
-            if maze.is_open(south.0 as i32, south.1 as i32, Direction::North) {
-                FLOOR_ATLAS_INDEX
-            } else {
-                WALL_ATLAS_INDEX
+            match maze.flow_at(south.0, south.1) {
+                Some(Direction::North) => water_atlas_index(Direction::North),
+                _ if maze.is_open(south.0 as i32, south.1 as i32, Direction::North) => {
+                    FLOOR_ATLAS_INDEX
+                }
+                _ => WALL_ATLAS_INDEX,
             }
         }
         _ => WALL_ATLAS_INDEX,
@@ -421,6 +437,52 @@ pub fn cell_world_pos(map_cells: (u32, u32), cell: (u32, u32), tile_size: f32) -
         (cell.0 * 2 + 1, cell.1 * 2 + 1),
         tile_size,
     )
+}
+
+/// Atlas column for a water tile flowing in `direction`.
+fn water_atlas_index(direction: Direction) -> u32 {
+    match direction {
+        Direction::East => WATER_EAST_ATLAS_INDEX,
+        Direction::West => WATER_WEST_ATLAS_INDEX,
+        Direction::North => WATER_NORTH_ATLAS_INDEX,
+        Direction::South => WATER_SOUTH_ATLAS_INDEX,
+    }
+}
+
+/// Whether an atlas pixel sits on the water tile's flow chevron. The
+/// canonical chevron points east; the other directions rotate the pixel.
+fn water_chevron(direction: Direction, px: u32, py: u32, tile_px: u32) -> bool {
+    let s = tile_px as i32;
+    let (mut px, mut py) = (px as i32, py as i32);
+    match direction {
+        Direction::East => {}
+        Direction::West => {
+            // 180°: the apex swings to the left.
+            px = s - 1 - px;
+            py = s - 1 - py;
+        }
+        Direction::North => {
+            // 90° anticlockwise: the apex swings to the top.
+            let swap = px;
+            px = py;
+            py = s - 1 - swap;
+        }
+        Direction::South => {
+            // 90° clockwise: the apex swings to the bottom.
+            let swap = px;
+            px = s - 1 - py;
+            py = swap;
+        }
+    }
+    let c = s / 2;
+    let apex = s - 4;
+    let arm = s / 4;
+    // Two diagonal strokes running from the left of centre and meeting
+    // at the apex — clipped there, so the shape reads as a chevron and
+    // not a crossing.
+    let upper = ((px - py) - (apex - c)).abs() <= 1;
+    let lower = ((px + py) - (apex + c)).abs() <= 1;
+    px >= c - arm && px <= apex && (upper || lower)
 }
 
 /// The title map's atlas: two plain solid tiles (letter, hedge) — the
@@ -462,6 +524,8 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
     const HEDGE: [u8; 4] = [106, 153, 78, 255];
     const HEDGE_LIT: [u8; 4] = [127, 175, 95, 255];
     const HEDGE_DARK: [u8; 4] = [84, 124, 60, 255];
+    const WATER: [u8; 4] = [127, 178, 190, 255];
+    const WATER_CREST: [u8; 4] = [214, 236, 242, 255];
     const MAT: [u8; 4] = [238, 141, 176, 255];
     const MAT_EDGE: [u8; 4] = [250, 205, 222, 255];
     let border = px == 0 || py == 0 || px == tile_px - 1 || py == tile_px - 1;
@@ -480,6 +544,20 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
                 HEDGE_DARK
             } else {
                 HEDGE
+            }
+        }
+        WATER_EAST_ATLAS_INDEX..=WATER_SOUTH_ATLAS_INDEX => {
+            // A cool pool with a light chevron pointing downstream.
+            let direction = match column {
+                WATER_EAST_ATLAS_INDEX => Direction::East,
+                WATER_WEST_ATLAS_INDEX => Direction::West,
+                WATER_NORTH_ATLAS_INDEX => Direction::North,
+                _ => Direction::South,
+            };
+            if water_chevron(direction, px, py, tile_px) {
+                WATER_CREST
+            } else {
+                WATER
             }
         }
         _ => {
@@ -603,9 +681,9 @@ mod tests {
         // A braided maze keeps few dead ends; spots must never be the start
         // or exit, and never exceed the count.
         for seed in 0..10u64 {
-            let maze = Maze::generate(7, 5, seed, 0.2);
+            let maze = Maze::with_streams(7, 5, seed, 0.2, 1);
             let distances = maze.distances_from((0, 0));
-            let exit = farthest_cell(&distances, (7, 5));
+            let exit = farthest_cell(&maze, &distances, (7, 5));
             let spots = duckling_spots(&maze, (0, 0), exit, 3);
             assert!(spots.len() <= 3);
             assert!(spots.iter().all(|&cell| cell != (0, 0) && cell != exit));

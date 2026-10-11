@@ -28,6 +28,20 @@ clutch in tow.
 - Pickup. Ducklings wait at dead ends and distant cells. Hopping onto one
   collects it: it joins the trail and chirps, pitched a little higher for each
   sibling already in the line.
+- Streams. One-way runs of water cells (2–5 straight cells, from level
+  index 1, count `1 + n/3` capped at 4) carry anything on them along the
+  flow at `STREAM_HOP_SECS` per cell. The duck rides with her conga
+  trailing through the water; waiting ducklings caught in the current get
+  swept. Riding, a manual input toward an open side branch hops out (never
+  along the flow, never back upstream); at the run's end the current
+  carries one cell past onto the adjoining path. A swept duckling passing
+  onto or beside mum's cell is plucked into the trail. Same-direction runs
+  never leave one-cell dry gaps (the filler merges them). Streams are gated
+  for solvability: the movement graph (walking + one-way rides with
+  junction exits and let-offs) must be strongly connected from the start —
+  every dry cell reachable, and able to get back — so a one-way stream can
+  never seal a pocket; an unsolvable seed retries with a salt (the
+  escalation-ladder pattern).
 - Level flow. Reaching the exit with the full clutch completes the level.
   The next level's maze grows; seeds derive from the run seed plus the level
   index, so a run is reproducible from its seed.
@@ -56,6 +70,8 @@ input that opened a screen cannot also dismiss it.
 - `CAMERA_SMOOTHING = 6.0` — exponential smoothing rate for camera follow.
 - `SHAKE_SECS = 0.36`, `SHAKE_AMPLITUDE = 0.6`, `SHAKE_WAGS = 3.0` — the
   out-of-range head shake's duration, peak yaw swing (radians) and wags.
+- `STREAM_HOP_SECS = 0.07` — duration of one stream-carried hop (the
+  current is roughly double walking speed).
 - `CONFIRM_DEBOUNCE_SECS = 0.3` — how long after a screen appears before
   confirm input is heeded.
 - Difficulty curves (index `n`, zero-based; shared growth `+2n` width,

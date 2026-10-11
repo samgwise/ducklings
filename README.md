@@ -2,7 +2,9 @@
 
 A cosy puzzle game: pick your pond, then guide a mother duck through
 procedurally generated mazes, collecting her ducklings into a trailing conga
-line and leading the whole clutch to the exit.
+line and leading the whole clutch to the exit. One-way streams sweep
+anything on them downstream — ride them as fast-travel highways, hop out
+at junctions, and pluck swept ducklings as they pass.
 
 Three difficulties shape the ponds: **Pond** (gentle loops), **Meadow**
 (the classic maze) and **Marsh** (dead ends and wits).
@@ -51,10 +53,11 @@ Or the title screen's lettering map:
 cargo run -p game --example ascii_title
 ```
 
-## Regenerating the placeholder audio
+## Regenerating the placeholder sound effects
 
-The committed WAV files under `assets/audio` are synthesised placeholders.
-Regenerate them after tweaking the synthesis:
+The committed SFX files under `assets/audio/sfx` are synthesised
+placeholders; regenerate them after tweaking the synthesis (the music loop
+is a hand-made take and is never touched):
 
 ```sh
 cargo run -p game --example gen_placeholder_audio

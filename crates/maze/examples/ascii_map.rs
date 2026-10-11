@@ -1,8 +1,9 @@
 //! Print an ASCII rendering of a generated maze: `+`/`-`/`|` hedges, `S`
-//! start, `E` exit, `d` dead end, `.` open cell.
+//! start, `E` exit, `d` dead end, `.` open cell, and stream flows as
+//! `> < ^ v` arrows.
 //!
 //! ```sh
-//! cargo run -p maze --example ascii_map [seed] [width] [height] [braid_percent]
+//! cargo run -p maze --example ascii_map [seed] [width] [height] [braid_percent] [streams]
 //! ```
 
 use maze::{Direction, Maze};
@@ -14,7 +15,8 @@ fn main() {
 
     let (seed, width, height) = (arg(0, 0), arg(1, 11) as u32, arg(2, 9) as u32);
     let braid = arg(3, 20) as f32 / 100.0;
-    let maze = Maze::generate(width, height, seed, braid);
+    let streams = arg(4, 2) as u32;
+    let maze = Maze::with_streams(width, height, seed, braid, streams);
     let distances = maze.distances_from((0, 0));
 
     // The exit is the farthest cell from the start, mirroring the game.
@@ -45,6 +47,13 @@ fn main() {
                 'S'
             } else if cell == exit {
                 'E'
+            } else if let Some(flow) = maze.flow_at(x, y) {
+                match flow {
+                    Direction::North => '^',
+                    Direction::South => 'v',
+                    Direction::East => '>',
+                    Direction::West => '<',
+                }
             } else if dead_ends.contains(&cell) {
                 'd'
             } else {
@@ -72,5 +81,5 @@ fn main() {
         }
         println!("+");
     }
-    println!("seed: {seed}  {width}x{height}  braid: {braid}");
+    println!("seed: {seed}  {width}x{height}  braid: {braid}  streams: {streams}");
 }

@@ -22,6 +22,8 @@ pub enum SfxEvent {
     Chirp { speed: f32 },
     /// The level is complete.
     Fanfare,
+    /// Crossing the waterline: entering a stream, or the let-off.
+    Splash,
 }
 
 /// Handles to the loaded effects.
@@ -31,6 +33,7 @@ pub struct SfxHandles {
     bump: Option<Handle<AudioSource>>,
     chirp: Option<Handle<AudioSource>>,
     fanfare: Option<Handle<AudioSource>>,
+    splash: Option<Handle<AudioSource>>,
 }
 
 /// Marks the looping music entity.
@@ -54,6 +57,7 @@ fn load_sfx(mut handles: ResMut<SfxHandles>, server: Res<AssetServer>) {
     handles.bump = Some(server.load("audio/sfx/bump.wav"));
     handles.chirp = Some(server.load("audio/sfx/chirp.wav"));
     handles.fanfare = Some(server.load("audio/sfx/fanfare.wav"));
+    handles.splash = Some(server.load("audio/sfx/splash.wav"));
 }
 
 /// Start the looping pond bed.
@@ -74,6 +78,7 @@ fn play_sfx(mut events: MessageReader<SfxEvent>, handles: Res<SfxHandles>, mut c
             SfxEvent::Bump => (handles.bump.clone(), 1.0),
             SfxEvent::Chirp { speed } => (handles.chirp.clone(), *speed),
             SfxEvent::Fanfare => (handles.fanfare.clone(), 1.0),
+            SfxEvent::Splash => (handles.splash.clone(), 1.0),
         };
         let Some(handle) = handle else {
             continue;

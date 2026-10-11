@@ -1,6 +1,7 @@
-//! Synthesise the placeholder audio under `assets/audio`: soft effects and
-//! a gentle looping pond pad. Pure std — a WAV is just a RIFF header plus
-//! 16-bit PCM samples, so there is nothing to depend on.
+//! Synthesise the placeholder sound effects under `assets/audio/sfx`:
+//! soft, watery one-shots. Pure std — a WAV is just a RIFF header plus
+//! 16-bit PCM samples, so there is nothing to depend on. The music loop is
+//! a hand-made take and is deliberately never touched by this generator.
 //!
 //! ```sh
 //! cargo run -p game --example gen_placeholder_audio
@@ -13,18 +14,18 @@ use std::path::PathBuf;
 const SAMPLE_RATE: u32 = 22_050;
 
 fn main() -> std::io::Result<()> {
-    let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/audio"));
-    let sfx = root.join("sfx");
-    let music = root.join("music");
+    let sfx = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/audio/sfx"
+    ));
     std::fs::create_dir_all(&sfx)?;
-    std::fs::create_dir_all(&music)?;
 
     write_wav(&sfx.join("hop.wav"), &hop())?;
     write_wav(&sfx.join("bump.wav"), &bump())?;
     write_wav(&sfx.join("chirp.wav"), &chirp())?;
     write_wav(&sfx.join("fanfare.wav"), &fanfare())?;
-    write_wav(&music.join("pond.wav"), &pond())?;
-    println!("wrote placeholder audio to {}", root.display());
+    write_wav(&sfx.join("splash.wav"), &splash())?;
+    println!("wrote placeholder sfx to {}", sfx.display());
     Ok(())
 }
 
@@ -71,6 +72,27 @@ fn chirp() -> Vec<f32> {
         .collect()
 }
 
+/// A watery splash: a pitch-dropping plop over a noise burst — crossing
+/// onto or off a stream.
+fn splash() -> Vec<f32> {
+    let dur = 0.18_f32;
+    let len = (SAMPLE_RATE as f32 * dur) as usize;
+    let mut phase = 0.0_f32;
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    (0..len)
+        .map(|s| {
+            let t = s as f32 / SAMPLE_RATE as f32;
+            let freq = 90.0 + 330.0 * (-t * 18.0).exp();
+            phase += TAU * freq / SAMPLE_RATE as f32;
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let noise = ((seed >> 33) as i32) as f32 / i32::MAX as f32;
+            0.35 * phase.sin() * (-t * 14.0).exp() + 0.18 * noise * (-t * 22.0).exp()
+        })
+        .collect()
+}
+
 /// A rising bell arpeggio — C5 E5 G5 C6 — for the level fanfare.
 fn fanfare() -> Vec<f32> {
     let notes = [523.25, 659.25, 783.99, 1046.5];
@@ -94,50 +116,6 @@ fn fanfare() -> Vec<f32> {
         }
     }
     out
-}
-
-/// The looping pond bed: four slow chords on a circular timeline, each
-/// fading in and out so the loop wraps cleanly. Oscillator frequencies are
-/// quantised to whole cycles of the loop, so every sine is phase-continuous
-/// across the wrap.
-fn pond() -> Vec<f32> {
-    const CHORD_SECS: f32 = 4.8;
-    // C major, A minor, F major, G major — warm pads, one octave shimmer.
-    let chords: [[f32; 4]; 4] = [
-        [130.81, 196.0, 329.63, 523.25],
-        [110.0, 164.81, 261.63, 440.0],
-        [87.31, 174.61, 220.0, 349.23],
-        [98.0, 196.0, 246.94, 392.0],
-    ];
-    let gains = [0.16, 0.10, 0.07, 0.04];
-    let chord_len = (CHORD_SECS * SAMPLE_RATE as f32) as usize;
-    let total = chord_len * chords.len();
-    let loop_freq = SAMPLE_RATE as f32 / total as f32;
-    let attack = 0.6_f32;
-    (0..total)
-        .map(|s| {
-            let t = s as f32 / SAMPLE_RATE as f32;
-            let u = (s % chord_len) as f32 / SAMPLE_RATE as f32;
-            // Distance to the nearest edge of this chord's span, as a fade.
-            let window = ((u.min(CHORD_SECS - u)) / attack).min(1.0);
-            let swell = 1.0 + 0.08 * (TAU * 0.1 * t).sin();
-            chords
-                .iter()
-                .zip(gains)
-                .map(|(chord, gain)| {
-                    chord
-                        .iter()
-                        .map(|&f| {
-                            let f = (f / loop_freq).round() * loop_freq;
-                            gain * (TAU * f * t).sin()
-                        })
-                        .sum::<f32>()
-                })
-                .sum::<f32>()
-                * window
-                * swell
-        })
-        .collect()
 }
 
 /// Write 16-bit mono PCM WAV.
