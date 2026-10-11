@@ -58,4 +58,5 @@ cargo run -p game --example gen_placeholder_audio
 | WASD / arrow keys | Hop one tile |
 | D-pad (Steam Deck / Xbox controllers) | Hop one tile |
 | Click / tap | Hop along the corridor toward the point — stops at the click or the first hedge, never around corners; unreachable clicks get a head shake |
-| Enter / Space / A (controller) | Next level (on the level-complete overlay) |
+| Tap / Enter / Space / A (controller) | Next level (on the level-complete overlay) |
+| N | Debug: jump to the level-complete overlay |

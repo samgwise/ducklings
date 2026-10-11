@@ -32,6 +32,14 @@ clutch in tow.
   The next level's maze grows; seeds derive from the run seed plus the level
   index, so a run is reproducible from its seed.
 
+## Screens
+
+Screens (the level-complete overlay today; title and pause later) are
+phases of the one `GamePhase` state machine with shared idioms in
+`crates/game/src/menus.rs`: the overlay panel builder, the confirm input
+(Enter/Space, pad A, or a tap) and a `CONFIRM_DEBOUNCE_SECS` gate so the
+input that opened a screen cannot also dismiss it.
+
 ## Tuning values
 
 - `TILE_SIZE = 40.0` — world units (pixels) per tile.
@@ -43,6 +51,8 @@ clutch in tow.
 - `CAMERA_SMOOTHING = 6.0` — exponential smoothing rate for camera follow.
 - `SHAKE_SECS = 0.36`, `SHAKE_AMPLITUDE = 0.6`, `SHAKE_WAGS = 3.0` — the
   out-of-range head shake's duration, peak yaw swing (radians) and wags.
+- `CONFIRM_DEBOUNCE_SECS = 0.3` — how long after a screen appears before
+  confirm input is heeded.
 - Level curve (index `n`, zero-based): width `7 + 2n` capped at 25, height
   `5 + n` capped at 17, ducklings `2 + n` capped at 12, braid `0.2`.
 

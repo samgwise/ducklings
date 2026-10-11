@@ -11,6 +11,7 @@ pub mod duck;
 pub mod ducklings;
 pub mod hud;
 pub mod level;
+pub mod menus;
 pub mod world;
 
 use bevy::asset::AssetPlugin;
@@ -48,6 +49,7 @@ pub fn run() {
             ducklings::DucklingsPlugin,
             audio::SoundPlugin,
             hud::HudPlugin,
+            menus::MenusPlugin,
         ))
         .run();
 }

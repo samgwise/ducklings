@@ -1,10 +1,8 @@
 //! Level flow: the Playing/Complete phase machine, the run seed, the level
 //! index, and the difficulty curve.
 
-use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
 
-use crate::audio::SfxEvent;
 use crate::duck::Duck;
 use crate::ducklings::Clutch;
 use crate::world::{LevelEntity, MazeRes, build_level};
@@ -61,7 +59,7 @@ impl Default for RunSeed {
 #[derive(Resource, Debug, Default)]
 pub struct LevelIndex(pub u32);
 
-/// One keypress advances to the next level's pond.
+/// The level state machine and progression; screens live in menus.
 pub struct LevelPlugin;
 
 impl Plugin for LevelPlugin {
@@ -71,20 +69,12 @@ impl Plugin for LevelPlugin {
             .init_resource::<LevelIndex>()
             .add_systems(
                 Update,
-                check_level_complete.run_if(in_state(GamePhase::Playing)),
+                (check_level_complete, debug_complete_level).run_if(in_state(GamePhase::Playing)),
             )
-            .add_systems(OnEnter(GamePhase::Complete), play_fanfare)
-            .add_systems(OnExit(GamePhase::Complete), rebuild_level)
-            .add_systems(
-                Update,
-                advance_to_next_pond.run_if(in_state(GamePhase::Complete)),
-            );
+            // The complete screen itself lives in menus; leaving it
+            // rebuilds the next pond.
+            .add_systems(OnExit(GamePhase::Complete), rebuild_level);
     }
-}
-
-/// The completion fanfare, once, as the overlay appears.
-fn play_fanfare(mut sfx: MessageWriter<SfxEvent>) {
-    sfx.write(SfxEvent::Fanfare);
 }
 
 /// Reaching the exit with the full clutch completes the level.
@@ -95,6 +85,14 @@ fn check_level_complete(
     mut next: ResMut<NextState<GamePhase>>,
 ) {
     if duck.cell == maze_res.exit && clutch.collected == clutch.total {
+        next.set(GamePhase::Complete);
+    }
+}
+
+/// Debug: jump straight to the level-complete screen so the overlay and
+/// its advance input can be tested without finishing a clutch.
+fn debug_complete_level(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<GamePhase>>) {
+    if keys.just_pressed(KeyCode::KeyN) {
         next.set(GamePhase::Complete);
     }
 }
@@ -123,20 +121,4 @@ fn rebuild_level(
         &plan,
         seed.0.wrapping_add(level.0 as u64),
     );
-}
-
-/// On the complete overlay, Enter, Space or the pad's A (South) moves on.
-fn advance_to_next_pond(
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
-    mut next: ResMut<NextState<GamePhase>>,
-) {
-    let advanced = keys.just_pressed(KeyCode::Enter)
-        || keys.just_pressed(KeyCode::Space)
-        || pads
-            .iter()
-            .any(|pad| pad.just_pressed(GamepadButton::South));
-    if advanced {
-        next.set(GamePhase::Playing);
-    }
 }
