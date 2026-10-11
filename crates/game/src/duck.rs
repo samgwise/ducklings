@@ -1,14 +1,17 @@
-//! The mother duck: buffered input, one-tile hops with a smooth lerp, and
-//! the path history her ducklings follow.
+//! The mother duck: buffered input from keys, D-pad and clicks/taps,
+//! one-tile hops with a smooth lerp, and the path history her ducklings
+//! follow.
+
+use std::collections::VecDeque;
 
 use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
 
-use maze::Direction;
+use maze::{Direction, Maze};
 
 use crate::audio::SfxEvent;
 use crate::level::GamePhase;
-use crate::world::{MazeRes, TILE_SIZE, cell_world_pos};
+use crate::world::{MainCamera, MazeRes, TILE_SIZE, cell_world_pos};
 
 /// Duration of one hop, in seconds.
 pub const HOP_SECS: f32 = 0.15;
@@ -44,13 +47,17 @@ pub struct PathHistory(pub Vec<(u32, u32)>);
 #[derive(Component, Default)]
 pub struct BufferedMove(pub Option<Direction>);
 
+/// Pending hop directions from a click/tap, consumed one per hop.
+#[derive(Component, Default)]
+pub struct WalkPlan(pub VecDeque<Direction>);
+
 pub struct DuckPlugin;
 
 impl Plugin for DuckPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (buffer_input, hop).run_if(in_state(GamePhase::Playing)),
+            (pointer_walk, buffer_input, hop).run_if(in_state(GamePhase::Playing)),
         );
     }
 }
@@ -116,11 +123,13 @@ fn hop(
             &mut BufferedMove,
             Option<&mut Hop>,
             &mut PathHistory,
+            &mut WalkPlan,
         ),
         With<Duck>,
     >,
 ) {
-    let (entity, mut duck, mut transform, mut buffered, hop, mut history) = mover.into_inner();
+    let (entity, mut duck, mut transform, mut buffered, hop, mut history, mut plan) =
+        mover.into_inner();
     if let Some(mut hop) = hop {
         hop.progress += time.delta_secs() / HOP_SECS;
         if hop.progress < 1.0 {
@@ -140,7 +149,9 @@ fn hop(
         commands.entity(entity).remove::<Hop>();
         sfx.write(SfxEvent::Hop);
     }
-    let Some(dir) = buffered.0.take() else {
+    // A manual press cancels any queued walk: latest intent wins.
+    let next = buffered.0.take().inspect(|_| plan.0.clear());
+    let Some(dir) = next.or_else(|| plan.0.pop_front()) else {
         return;
     };
     let (x, y) = duck.cell;
@@ -169,5 +180,149 @@ fn facing_angle(dir: Direction) -> f32 {
         Direction::East => 0.0,
         Direction::South => -core::f32::consts::FRAC_PI_2,
         Direction::West => core::f32::consts::PI,
+    }
+}
+
+/// Click or tap: queue hops along the straight corridor toward the point —
+/// as far as the click along one axis, never around corners.
+fn pointer_walk(
+    clicks: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    maze_res: Res<MazeRes>,
+    target: Single<(&Duck, &mut WalkPlan)>,
+) {
+    let point = if clicks.just_pressed(MouseButton::Left) {
+        window.cursor_position()
+    } else {
+        touches
+            .iter_just_pressed()
+            .next()
+            .map(|touch| touch.position())
+    };
+    let Some(point) = point else {
+        return;
+    };
+    let Ok(world) = camera.0.viewport_to_world_2d(camera.1, point) else {
+        return;
+    };
+    let cells = (maze_res.maze.width(), maze_res.maze.height());
+    let cell = world_to_cell(cells, world);
+    let (duck, mut plan) = target.into_inner();
+    plan.0 = walk_plan(&maze_res.maze, duck.cell, cell).into();
+}
+
+/// The maze cell under a world point — hedges snap to their nearest cell,
+/// and clicks beyond the maze clamp inside it.
+fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
+    // The tile grid is (2w+1) wide, so tile index from world is
+    // `x / TILE + w`; cell (x, y) occupies tile (2x + 1, 2y + 1).
+    let tile_x = (world.x / TILE_SIZE + cells.0 as f32).round() as i32;
+    let tile_y = (world.y / TILE_SIZE + cells.1 as f32).round() as i32;
+    (
+        ((tile_x - 1).div_euclid(2)).clamp(0, cells.0 as i32 - 1) as u32,
+        ((tile_y - 1).div_euclid(2)).clamp(0, cells.1 as i32 - 1) as u32,
+    )
+}
+
+/// The straight-corridor hops from `from` toward `target`: the dominant
+/// axis only, as far as the target along that axis, truncated at the first
+/// hedge — a click never navigates the duck around corners.
+fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction> {
+    let dx = target.0 as i32 - from.0 as i32;
+    let dy = target.1 as i32 - from.1 as i32;
+    let (dir, steps) = if dx.abs() >= dy.abs() {
+        (
+            if dx >= 0 {
+                Direction::East
+            } else {
+                Direction::West
+            },
+            dx.abs(),
+        )
+    } else {
+        (
+            if dy >= 0 {
+                Direction::North
+            } else {
+                Direction::South
+            },
+            dy.abs(),
+        )
+    };
+    let mut plan = Vec::new();
+    let (mut x, mut y) = (from.0 as i32, from.1 as i32);
+    for _ in 0..steps {
+        if !maze.is_open(x, y, dir) {
+            break;
+        }
+        let (dx, dy) = dir.delta();
+        x += dx;
+        y += dy;
+        plan.push(dir);
+    }
+    plan
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The open run from (2, 2) along `dir`, counted from the maze itself.
+    fn open_run(maze: &Maze, dir: Direction) -> i32 {
+        let (dx, dy) = dir.delta();
+        let (mut x, mut y) = (2i32, 2i32);
+        let mut run = 0;
+        while maze.is_open(x, y, dir) {
+            x += dx;
+            y += dy;
+            run += 1;
+        }
+        run
+    }
+
+    #[test]
+    fn walk_plans_follow_the_open_corridor_and_stop() {
+        // A click past the hedge plans exactly the open run — never more.
+        let maze = Maze::generate(7, 7, 7, 0.0);
+        for dir in Direction::ALL {
+            let (dx, dy) = dir.delta();
+            let run = open_run(&maze, dir);
+            let target = ((2 + dx * 5).max(0) as u32, (2 + dy * 5).max(0) as u32);
+            let plan = walk_plan(&maze, (2, 2), target);
+            assert_eq!(plan.len(), run as usize, "run {dir:?}");
+            assert!(plan.iter().all(|&d| d == dir), "run {dir:?}");
+        }
+    }
+
+    #[test]
+    fn walk_plans_take_the_dominant_axis_only() {
+        let maze = Maze::generate(9, 5, 3, 0.0);
+        // A diagonal click never turns a corner: one axis only is walked.
+        let plan = walk_plan(&maze, (4, 2), (6, 3));
+        assert!(plan.iter().all(|&d| d == Direction::East));
+        let plan = walk_plan(&maze, (4, 2), (5, 5));
+        assert!(plan.iter().all(|&d| d == Direction::North));
+    }
+
+    #[test]
+    fn clicking_the_duck_plans_nothing() {
+        let maze = Maze::generate(5, 5, 1, 0.0);
+        assert!(walk_plan(&maze, (2, 2), (2, 2)).is_empty());
+    }
+
+    #[test]
+    fn world_to_cell_inverts_cell_world_pos() {
+        let cells = (4u32, 3u32);
+        for y in 0..cells.1 {
+            for x in 0..cells.0 {
+                let world = cell_world_pos(cells, (x, y), TILE_SIZE);
+                assert_eq!(world_to_cell(cells, world), (x, y));
+            }
+        }
+        // Clicks far outside the maze clamp inside it.
+        assert_eq!(world_to_cell(cells, Vec2::new(-1000.0, -1000.0)), (0, 0));
+        assert_eq!(world_to_cell(cells, Vec2::new(1000.0, 1000.0)), (3, 2));
     }
 }

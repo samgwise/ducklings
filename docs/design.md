@@ -14,8 +14,12 @@ clutch in tow.
 
 - Grid-step movement. The duck hops one cell at a time with a short lerp;
   one move can be buffered mid-hop so quick turns feel responsive. Input
-  comes from the keyboard (WASD/arrows) or any connected controller's
-  D-pad. Hopping into a hedge is a bump: nothing moves, a soft thud plays.
+  comes from the keyboard (WASD/arrows), any connected controller's D-pad,
+  or a click/tap: the duck hops along the corridor toward the point — as
+  far as the click along the dominant axis, truncated at the first hedge,
+  never around corners. A key or D-pad press cancels a queued walk; a new
+  click replaces it. Hopping into a hedge is a bump: nothing moves, a soft
+  thud plays.
 - Duckling trail. The duck's completed hops are recorded as a path history;
   duckling *i* drifts toward the position `SPACING × (i + 1)` steps back along
   that history, smoothed exponentially. The clutch forms a smooth conga line.

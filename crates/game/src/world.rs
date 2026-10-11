@@ -12,7 +12,7 @@ use bevy_ecs_tilemap::prelude::*;
 
 use maze::{Direction, Maze};
 
-use crate::duck::{BufferedMove, Duck, PathHistory};
+use crate::duck::{BufferedMove, Duck, PathHistory, WalkPlan};
 use crate::ducklings::{Clutch, Duckling, Waiting, follow_step};
 use crate::level::{LevelIndex, RunSeed, level_plan};
 
@@ -195,6 +195,7 @@ pub(crate) fn build_level(
             },
             PathHistory(vec![start]),
             BufferedMove::default(),
+            WalkPlan::default(),
             Mesh2d(meshes.add(Mesh::from(Circle::new(TILE_SIZE * 0.38)))),
             MeshMaterial2d(materials.add(ColorMaterial::from_color(DUCK_COLOUR))),
             Transform::from_xyz(duck_pos.x, duck_pos.y, 1.0),
