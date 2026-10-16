@@ -23,9 +23,10 @@ Three difficulties shape the ponds: **Pond** (gentle loops), **Meadow**
 ## Prerequisites
 
 - Rust stable.
-- Linux only: ALSA and udev dev packages for Bevy's audio and gamepad
-  support — `sudo apt-get install --no-install-recommends libasound2-dev
-  libudev-dev pkg-config`.
+- Linux only: ALSA, udev and Wayland dev packages for Bevy's audio,
+  gamepad and windowing support — `sudo apt-get install
+  --no-install-recommends libasound2-dev libudev-dev libwayland-dev
+  pkg-config`.
 
 ## Building and testing
 

@@ -18,7 +18,7 @@ jobs:
     - name: Install Linux system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev pkg-config
+        sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev libwayland-dev pkg-config
     - name: Run tests
       run: cargo test --verbose
 
@@ -50,7 +50,7 @@ jobs:
     - name: Install Linux system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev pkg-config
+        sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev libwayland-dev pkg-config
     - name: Build (release)
       run: cargo build --release --package game
     - name: Package game and assets
