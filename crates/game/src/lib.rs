@@ -15,13 +15,28 @@ pub mod level;
 pub mod menus;
 pub mod world;
 
+use std::path::PathBuf;
+
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 
-/// Absolute assets directory, resolved at compile time — Bevy roots asset
-/// sources at the executable's directory, which for target/ binaries is
-/// nowhere near the workspace assets without this override.
-pub const ASSETS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
+/// Resolve the assets directory at runtime: packaged builds ship `assets`
+/// beside the executable, while development runs (via `cargo`) fall back to
+/// the workspace copy recorded at compile time — Bevy roots asset sources at
+/// the executable's directory, which for target/ binaries is nowhere near
+/// the workspace assets without this override.
+fn assets_path() -> PathBuf {
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+    {
+        let bundled = exe_dir.join("assets");
+        if bundled.is_dir() {
+            return bundled;
+        }
+    }
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into()
+}
 
 /// Assemble and run the game client.
 pub fn run() {
@@ -29,7 +44,7 @@ pub fn run() {
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
-                    file_path: ASSETS_PATH.into(),
+                    file_path: assets_path().to_string_lossy().into_owned(),
                     ..default()
                 })
                 .set(WindowPlugin {

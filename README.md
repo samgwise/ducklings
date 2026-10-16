@@ -23,6 +23,9 @@ Three difficulties shape the ponds: **Pond** (gentle loops), **Meadow**
 ## Prerequisites
 
 - Rust stable.
+- Linux only: ALSA and udev dev packages for Bevy's audio and gamepad
+  support — `sudo apt-get install --no-install-recommends libasound2-dev
+  libudev-dev pkg-config`.
 
 ## Building and testing
 
@@ -40,6 +43,14 @@ cargo run -p game
 
 Set `DUCKLINGS_SEED` to a whole number for a reproducible run; unset, each
 launch picks a fresh seed.
+
+## CI builds
+
+Every push to `main` and pull request runs the tests and publishes release
+artifacts (Actions → Rust run → Artifacts): a Windows zip and a Linux
+tarball built against glibc 2.35, so it runs on SteamOS / Steam Deck. Each
+archive holds the game binary with the `assets` directory beside it —
+extract it and run from inside the folder.
 
 ## Eyeballing generated mazes and the title lettering
 
