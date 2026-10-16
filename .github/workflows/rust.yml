@@ -42,15 +42,22 @@ jobs:
         path: dist/ducklings-windows-x64.zip
 
   build-linux:
-    # Ubuntu 22.04 ships glibc 2.35 — older than SteamOS 3 (Steam Deck), so
-    # binaries built here run on the Deck without a toolchain mismatch.
-    runs-on: ubuntu-22.04
+    # Built inside a pinned Ubuntu 22.04 *container* (glibc 2.35) — older
+    # than SteamOS 3 (Steam Deck), so binaries built here run on the Deck.
+    # Pinning the container keeps the glibc stable even as GitHub migrates
+    # the ubuntu-22.04 runner label onto newer images.
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
     steps:
-    - uses: actions/checkout@v4
-    - name: Install Linux system dependencies
+    - name: Install toolchain and system dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev libwayland-dev pkg-config
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y git curl build-essential libasound2-dev libudev-dev libwayland-dev pkg-config
+    - uses: actions/checkout@v4
+    - name: Install Rust
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
     - name: Build (release)
       run: cargo build --release --package game
     - name: Package game and assets
