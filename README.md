@@ -11,6 +11,22 @@ can't follow, so logs never guard the route home.
 Three difficulties shape the ponds: **Pond** (gentle loops), **Meadow**
 (the classic maze) and **Marsh** (dead ends and wits).
 
+## Downloading
+
+Grab the latest build from the rolling [`nightly` release][nightly] —
+refreshed automatically on every green `main` build:
+
+- Windows: [`ducklings-windows-x64.zip`][win]
+- Linux / SteamOS (Steam Deck): [`ducklings-linux-x64.tar.gz`][linux]
+
+Extract an archive and run the game from inside the folder; the Linux
+build targets glibc 2.35, so it runs on SteamOS without a toolchain
+mismatch.
+
+[nightly]: https://github.com/samgwise/ducklings/releases/tag/nightly
+[win]: https://github.com/samgwise/ducklings/releases/download/nightly/ducklings-windows-x64.zip
+[linux]: https://github.com/samgwise/ducklings/releases/download/nightly/ducklings-linux-x64.tar.gz
+
 ## Workspace
 
 - `crates/game` — Bevy client: grid-hop movement, the duckling trail, level
