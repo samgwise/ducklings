@@ -67,13 +67,11 @@ pub struct PathHistory(pub Vec<(u32, u32)>);
 #[derive(Component, Default)]
 pub struct BufferedMove(pub Option<Direction>);
 
-/// Pending hop directions from a click/tap, consumed one per hop, with the
-/// clicked cell the walk is aiming at — the out-of-range cue reads it when
-/// the corridor ends short.
+/// Pending hop directions from a click/tap, consumed one per hop: the walk
+/// of the tapped corridor.
 #[derive(Component, Default)]
 pub struct WalkPlan {
     pub queue: VecDeque<Direction>,
-    pub target: Option<(u32, u32)>,
 }
 
 /// An out-of-range head shake in progress.
@@ -207,13 +205,17 @@ fn hop(
     }
     let flow = maze_res.maze.flow_at(duck.cell.0, duck.cell.1);
     // A manual press cancels any queued walk: latest intent wins.
-    let manual = buffered.0.take().inspect(|_| {
-        plan.queue.clear();
-        plan.target = None;
-    });
+    let manual = buffered.0.take().inspect(|_| plan.queue.clear());
     let (dir, duration) = match (manual, flow) {
-        // On dry land the buffer or the click-walk plan drives.
-        (Some(dir), None) => (dir, HOP_SECS),
+        // On dry land a press walks its corridor — through bends to the
+        // next decision point, like a tap. A blocked first step leaves an
+        // empty plan and the hop below bumps.
+        (Some(dir), None) => {
+            plan.queue = corridor_walk(&maze_res.maze, duck.cell, dir)
+                .unwrap_or_default()
+                .into();
+            (plan.queue.pop_front().unwrap_or(dir), HOP_SECS)
+        }
         (None, None) => match plan.queue.pop_front() {
             Some(dir) => (dir, HOP_SECS),
             None => return,
@@ -246,7 +248,6 @@ fn hop(
             );
             if hop_out.is_none() {
                 plan.queue.clear();
-                plan.target = None;
             }
             match hop_out {
                 Some(dir) => (dir, HOP_SECS),
@@ -307,8 +308,9 @@ fn facing_angle(dir: Direction) -> f32 {
     }
 }
 
-/// Click or tap: queue hops along the straight corridor toward the point —
-/// as far as the click along one axis, never around corners.
+/// Click or tap: queue the corridor walk toward the point — the corridor
+/// ending nearest the tap, through bends to the next decision point. A tap
+/// that gets no closer to the point is refused on the spot.
 #[allow(clippy::too_many_arguments)]
 fn pointer_walk(
     clicks: Res<ButtonInput<MouseButton>>,
@@ -339,14 +341,12 @@ fn pointer_walk(
     let (duck_entity, duck, mut plan) = target.into_inner();
     let steps = walk_plan(&maze_res.maze, duck.cell, cell);
     if steps.is_empty() && cell != duck.cell {
-        // Straight into a hedge: refuse on the spot.
+        // No corridor ends any closer to the tap: refuse on the spot.
         sfx.write(SfxEvent::Bump);
         commands.entity(duck_entity).insert(HeadShake::default());
         plan.queue.clear();
-        plan.target = None;
     } else {
         plan.queue = steps.into();
-        plan.target = Some(cell);
     }
 }
 
@@ -383,85 +383,362 @@ fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
     )
 }
 
-/// The straight-corridor hops from `from` toward `target`: the dominant
-/// axis only, as far as the target along that axis, truncated at the first
-/// hedge — a click never navigates the duck around corners. A fallen log
-/// does not bar the walk: mum flies it, stranding any ducklings in tow.
+/// The corridor hops from `from` toward `target`: the tap picks the
+/// corridor — of the walks open from her cell that PASS closer to the
+/// tapped cell than she already is, the nearest-ending one — and that walk
+/// runs through bends, never stopping mid-corridor, to its first decision
+/// point: a branch offering a choice of ways, or a dead end. A tap with no
+/// corridor passing closer — across a hedge, say — plans nothing and is
+/// refused, and queued walks never fly logs or enter the water: those
+/// special moves take a deliberate ask.
 fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction> {
+    if from == target {
+        // A tap on the duck herself plans nothing.
+        return Vec::new();
+    }
+    // A special move — a log flight or a step into the current — needs a
+    // deliberate ask: the tap aimed straight at its own cell confirms it,
+    // and the move is that single hop.
+    let dir = dominant_axis(from, target);
+    let (dx, dy) = dir.delta();
+    let next = ((from.0 as i32 + dx) as u32, (from.1 as i32 + dy) as u32);
+    if target == next
+        && (maze.is_logged(from.0 as i32, from.1 as i32, dir)
+            || maze.flow_at(next.0, next.1).is_some())
+    {
+        return vec![dir];
+    }
+    let here = manhattan(from, target);
+    let mut best: Option<(u32, Vec<Direction>)> = None;
+    for dir in Direction::ALL {
+        let Some(plan) = corridor_walk(maze, from, dir) else {
+            continue;
+        };
+        // The corridor hit box: a walk qualifies when it passes closer to
+        // the tapped cell than she already is — anywhere along it, so a
+        // ring stop short of the tap still counts.
+        if closest_approach(from, &plan, target) >= here {
+            continue;
+        }
+        let distance = manhattan(walk_end(from, &plan), target);
+        if best
+            .as_ref()
+            .is_none_or(|(best_distance, _)| distance < *best_distance)
+        {
+            best = Some((distance, plan));
+        }
+    }
+    best.map(|(_, plan)| plan).unwrap_or_default()
+}
+
+/// The closest a corridor walk passes to `target`, in manhattan steps.
+fn closest_approach(from: (u32, u32), plan: &[Direction], target: (u32, u32)) -> u32 {
+    let (mut x, mut y) = (from.0 as i32, from.1 as i32);
+    let mut closest = manhattan(from, target);
+    for step in plan {
+        let (dx, dy) = step.delta();
+        x += dx;
+        y += dy;
+        closest = closest.min(manhattan((x as u32, y as u32), target));
+    }
+    closest
+}
+
+/// The manhattan distance between two cells.
+fn manhattan(a: (u32, u32), b: (u32, u32)) -> u32 {
+    a.0.abs_diff(b.0) + a.1.abs_diff(b.1)
+}
+
+/// The dominant axis from `from` toward `target` — ties lean east/west.
+fn dominant_axis(from: (u32, u32), target: (u32, u32)) -> Direction {
     let dx = target.0 as i32 - from.0 as i32;
     let dy = target.1 as i32 - from.1 as i32;
-    let (dir, steps) = if dx.abs() >= dy.abs() {
-        (
-            if dx >= 0 {
-                Direction::East
-            } else {
-                Direction::West
-            },
-            dx.abs(),
-        )
+    if dx.abs() >= dy.abs() {
+        if dx >= 0 {
+            Direction::East
+        } else {
+            Direction::West
+        }
+    } else if dy >= 0 {
+        Direction::North
     } else {
-        (
-            if dy >= 0 {
-                Direction::North
-            } else {
-                Direction::South
-            },
-            dy.abs(),
-        )
-    };
-    let mut plan = Vec::new();
+        Direction::South
+    }
+}
+
+/// The cell a corridor walk ends on.
+fn walk_end(from: (u32, u32), plan: &[Direction]) -> (u32, u32) {
     let (mut x, mut y) = (from.0 as i32, from.1 as i32);
-    for _ in 0..steps {
-        if !maze.is_open(x, y, dir) {
+    for step in plan {
+        let (dx, dy) = step.delta();
+        x += dx;
+        y += dy;
+    }
+    (x as u32, y as u32)
+}
+
+/// The walk from `from` heading `dir`: through bends — never stopping
+/// mid-corridor — until the first decision point: a branch offering a
+/// choice of ways, or a dead end. A queued walk never flies a log or steps
+/// into the current: those need a deliberate move, so the walk ends at the
+/// log and the water's edge.
+fn corridor_walk(maze: &Maze, from: (u32, u32), mut dir: Direction) -> Option<Vec<Direction>> {
+    if !maze.is_open(from.0 as i32, from.1 as i32, dir)
+        || maze.is_logged(from.0 as i32, from.1 as i32, dir)
+    {
+        return None;
+    }
+    let (fx, fy) = dir.delta();
+    let first = ((from.0 as i32 + fx) as u32, (from.1 as i32 + fy) as u32);
+    if maze.flow_at(first.0, first.1).is_some() {
+        return None;
+    }
+    let mut plan = Vec::new();
+    let mut visited = vec![from];
+    let (mut x, mut y) = (from.0 as i32, from.1 as i32);
+    loop {
+        if maze.is_logged(x, y, dir) {
             break;
         }
         let (dx, dy) = dir.delta();
+        let next = ((x + dx) as u32, (y + dy) as u32);
+        if maze.flow_at(next.0, next.1).is_some() {
+            break;
+        }
         x += dx;
         y += dy;
+        if visited.contains(&(x as u32, y as u32)) {
+            // A ring corridor would cycle forever: the loop's entry is the
+            // decision point, and the walk stops short of it.
+            break;
+        }
+        visited.push((x as u32, y as u32));
         plan.push(dir);
+        // The ways onward from here, the way back excluded: one means the
+        // corridor merely runs straight on or bends — keep going — none or
+        // several means a dead end or a branch, and the player chooses
+        // again.
+        let onward: Vec<Direction> = Direction::ALL
+            .into_iter()
+            .filter(|&d| d != dir.opposite())
+            .filter(|&d| maze.is_open(x, y, d))
+            .collect();
+        match onward.as_slice() {
+            &[only] => dir = only,
+            _ => break,
+        }
     }
-    plan
+    Some(plan)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The open run from (2, 2) along `dir`, counted from the maze itself.
-    fn open_run(maze: &Maze, dir: Direction) -> i32 {
-        let (dx, dy) = dir.delta();
-        let (mut x, mut y) = (2i32, 2i32);
-        let mut run = 0;
-        while maze.is_open(x, y, dir) {
-            x += dx;
-            y += dy;
-            run += 1;
-        }
-        run
-    }
-
     #[test]
-    fn walk_plans_follow_the_open_corridor_and_stop() {
-        // A click past the hedge plans exactly the open run — never more.
+    fn walk_plans_run_to_the_next_decision_point() {
+        // The tapped corridor's walk runs through bends and stops at the
+        // first decision point — a branch with a choice of ways, or a dead
+        // end — never mid-corridor, and never revisiting a cell.
         let maze = Maze::generate(7, 7, 7, 0.0);
-        for dir in Direction::ALL {
-            let (dx, dy) = dir.delta();
-            let run = open_run(&maze, dir);
-            let target = ((2 + dx * 5).max(0) as u32, (2 + dy * 5).max(0) as u32);
-            let plan = walk_plan(&maze, (2, 2), target);
-            assert_eq!(plan.len(), run as usize, "run {dir:?}");
-            assert!(plan.iter().all(|&d| d == dir), "run {dir:?}");
+        for y in 0..7u32 {
+            for x in 0..7u32 {
+                let from = (2u32, 2u32);
+                if (x, y) == from {
+                    continue;
+                }
+                let plan = walk_plan(&maze, from, (x, y));
+                // A tap that gets no closer is refused; the rest walks.
+                if plan.is_empty() {
+                    continue;
+                }
+                // Walk the plan, checking each cell it passes.
+                let (mut cx, mut cy) = from;
+                let mut visited = vec![from];
+                for (i, &step) in plan.iter().enumerate() {
+                    let (dx, dy) = step.delta();
+                    cx = (cx as i32 + dx) as u32;
+                    cy = (cy as i32 + dy) as u32;
+                    assert!(!visited.contains(&(cx, cy)), "the walk never revisits");
+                    visited.push((cx, cy));
+                    let onward: Vec<Direction> = Direction::ALL
+                        .into_iter()
+                        .filter(|&d| d != step.opposite())
+                        .filter(|&d| maze.is_open(cx as i32, cy as i32, d))
+                        .collect();
+                    if i + 1 == plan.len() {
+                        // The walk ends here: a branch or a dead end.
+                        assert!(
+                            onward.len() != 1,
+                            "the walk stops at a decision point, not mid-corridor"
+                        );
+                    } else {
+                        assert_eq!(onward.len(), 1, "the walk continues through bends");
+                        assert_eq!(onward[0], plan[i + 1], "each step follows the way on");
+                    }
+                }
+            }
         }
     }
 
     #[test]
-    fn walk_plans_take_the_dominant_axis_only() {
-        let maze = Maze::generate(9, 5, 3, 0.0);
-        // A diagonal click never turns a corner: one axis only is walked.
-        let plan = walk_plan(&maze, (4, 2), (6, 3));
-        assert!(plan.iter().all(|&d| d == Direction::East));
-        let plan = walk_plan(&maze, (4, 2), (5, 5));
-        assert!(plan.iter().all(|&d| d == Direction::North));
+    fn walk_plans_pick_the_corridor_nearest_their_tap() {
+        // Of the corridors open from her cell, the walk ends nearest the
+        // tapped cell — a click on a duckling across a bend follows the
+        // corridor that leads to it, not whichever axis happened to lead.
+        for seed in 0..10u64 {
+            let maze = Maze::generate(9, 7, seed, 0.3);
+            let from = ((seed % 7) as u32, ((seed / 2) % 5) as u32);
+            let target = ((from.0 + 3).min(8), (from.1 + 2).min(6));
+            if from == target {
+                continue;
+            }
+            let plan = walk_plan(&maze, from, target);
+            let here = manhattan(from, target);
+            if plan.is_empty() {
+                // Refused: no corridor passes any closer than she already is.
+                for dir in Direction::ALL {
+                    if let Some(alternative) = corridor_walk(&maze, from, dir) {
+                        assert!(
+                            closest_approach(from, &alternative, target) >= here,
+                            "a refused tap has no closer-passing corridor"
+                        );
+                    }
+                }
+                continue;
+            }
+            // A walked tap passes closer to the tapped cell than she was…
+            assert!(
+                closest_approach(from, &plan, target) < here,
+                "the walk passes closer to the tap"
+            );
+            // …and ends nearer than any other qualifying corridor's.
+            let best = manhattan(walk_end(from, &plan), target);
+            for dir in Direction::ALL {
+                if let Some(alternative) = corridor_walk(&maze, from, dir) {
+                    if closest_approach(from, &alternative, target) < here {
+                        assert!(
+                            best <= manhattan(walk_end(from, &alternative), target),
+                            "the walk picks the qualifying corridor ending nearest the tap"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn taps_on_adjacent_corridors_are_never_denied() {
+        // A click on any cell of a corridor open from her cell — even in a
+        // ringy maze where the walk stops at a ring short of the tap —
+        // walks that corridor.
+        for seed in 0..10u64 {
+            let maze = Maze::generate(9, 7, seed, 0.8);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    for dir in Direction::ALL {
+                        let Some(walk) = corridor_walk(&maze, (x, y), dir) else {
+                            continue;
+                        };
+                        let (mut cx, mut cy) = (x as i32, y as i32);
+                        for step in &walk {
+                            let (dx, dy) = step.delta();
+                            cx += dx;
+                            cy += dy;
+                            let plan = walk_plan(&maze, (x, y), (cx as u32, cy as u32));
+                            assert!(
+                                !plan.is_empty(),
+                                "a tap at {cx},{cy} from {x},{y} walks a corridor"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn corridor_walks_run_to_the_next_decision_point() {
+        // The shared engine of taps and presses: a walk follows the single
+        // way onward through bends and stops at the first decision point —
+        // a branch with a choice of ways, or a dead end — never revisiting
+        // a cell.
+        for seed in 0..10u64 {
+            let maze = Maze::generate(9, 7, seed, 0.3);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    for dir in Direction::ALL {
+                        let Some(plan) = corridor_walk(&maze, (x, y), dir) else {
+                            continue;
+                        };
+                        assert_eq!(plan[0], dir, "the walk leads the pressed way");
+                        let (mut cx, mut cy) = (x as i32, y as i32);
+                        let mut visited = vec![(x, y)];
+                        for (i, &step) in plan.iter().enumerate() {
+                            let (dx, dy) = step.delta();
+                            cx += dx;
+                            cy += dy;
+                            assert!(
+                                !visited.contains(&(cx as u32, cy as u32)),
+                                "the walk never revisits"
+                            );
+                            visited.push((cx as u32, cy as u32));
+                            let onward: Vec<Direction> = Direction::ALL
+                                .into_iter()
+                                .filter(|&d| d != step.opposite())
+                                .filter(|&d| maze.is_open(cx, cy, d))
+                                .collect();
+                            if i + 1 == plan.len() {
+                                // A branch or dead end — or a ring closure:
+                                // the one way onward lands where she has
+                                // already been.
+                                if onward.len() == 1 {
+                                    let (dx, dy) = onward[0].delta();
+                                    let next = ((cx + dx) as u32, (cy + dy) as u32);
+                                    assert!(
+                                        visited.contains(&next),
+                                        "the walk stops at a decision point or ring"
+                                    );
+                                }
+                            } else {
+                                assert_eq!(
+                                    onward.len(),
+                                    1,
+                                    "the walk continues through bends"
+                                );
+                                assert_eq!(onward[0], plan[i + 1]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn walk_plans_terminate_on_ring_corridors() {
+        // A corridor that loops back on itself must not walk forever: the
+        // plan stops before revisiting a cell. Heavy braiding makes rings.
+        for seed in 0..30u64 {
+            let maze = Maze::generate(9, 7, seed, 0.8);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    let plan = walk_plan(&maze, (x, y), (0, 0));
+                    let (mut cx, mut cy) = (x as i32, y as i32);
+                    let mut visited = vec![(x, y)];
+                    for step in &plan {
+                        let (dx, dy) = step.delta();
+                        cx += dx;
+                        cy += dy;
+                        assert!(
+                            !visited.contains(&(cx as u32, cy as u32)),
+                            "the walk from {x},{y} never revisits"
+                        );
+                        visited.push((cx as u32, cy as u32));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -488,25 +765,108 @@ mod tests {
     }
 
     #[test]
-    fn walk_plans_cross_a_log() {
-        // Some seed or another lays a log across a corridor; a click onto
-        // the cell across it plans the crossing — mum flies it, stranding
-        // any ducklings in tow.
+    fn corridor_walks_stop_before_a_log() {
+        // A queued walk never plans the flight: the log ends the walk, and
+        // crossing takes a deliberate move.
+        for seed in 0..20u64 {
+            let maze = Maze::with_obstacles(11, 9, seed, 0.2, 0, 3);
+            let Some((from, dir)) = logged_passage(&maze) else {
+                continue;
+            };
+            assert!(corridor_walk(&maze, from, dir).is_none());
+            return;
+        }
+        panic!("no seed in 0..20 laid a log to stop before");
+    }
+
+    #[test]
+    fn corridor_walks_never_fly_logs_or_enter_water() {
+        // No step of a queued walk crosses a logged passage or lands on
+        // the water — those moves are confirmations, never automatic.
+        for seed in 0..10u64 {
+            let maze = Maze::with_obstacles(9, 7, seed, 0.3, 2, 2);
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    for dir in Direction::ALL {
+                        let Some(plan) = corridor_walk(&maze, (x, y), dir) else {
+                            continue;
+                        };
+                        let (mut cx, mut cy) = (x as i32, y as i32);
+                        for step in &plan {
+                            assert!(!maze.is_logged(cx, cy, *step), "no step flies a log");
+                            let (dx, dy) = step.delta();
+                            cx += dx;
+                            cy += dy;
+                            assert!(
+                                maze.flow_at(cx as u32, cy as u32).is_none(),
+                                "no step enters the water"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn special_moves_need_a_deliberate_ask() {
+        // A log flight or a step into the current is confirmed by aiming
+        // straight at it — the tapped cell is the move's own target — and
+        // is that single hop; a tap past it never flies the log.
         for seed in 0..20u64 {
             let maze = Maze::with_obstacles(11, 9, seed, 0.2, 0, 3);
             let Some((from, dir)) = logged_passage(&maze) else {
                 continue;
             };
             let (dx, dy) = dir.delta();
-            let target = ((from.0 as i32 + dx) as u32, (from.1 as i32 + dy) as u32);
+            let across = ((from.0 as i32 + dx) as u32, (from.1 as i32 + dy) as u32);
+            let beyond = ((across.0 as i32 + dx) as u32, (across.1 as i32 + dy) as u32);
             assert_eq!(
-                walk_plan(&maze, from, target),
+                walk_plan(&maze, from, across),
                 vec![dir],
-                "the click flies the log"
+                "the tap on the far tile confirms the flight"
+            );
+            // A tap past the log either stops short or takes another
+            // corridor — never the logged step.
+            let plan = walk_plan(&maze, from, beyond);
+            let (mut px, mut py) = (from.0 as i32, from.1 as i32);
+            for step in &plan {
+                assert!(!maze.is_logged(px, py, *step));
+                let (sdx, sdy) = step.delta();
+                px += sdx;
+                py += sdy;
+            }
+            // The water too: a tap on the water cell itself rides.
+            let maze = Maze::with_streams(9, 7, seed, 0.3, 2);
+            let mut found = None;
+            for y in 0..maze.height() {
+                for x in 0..maze.width() {
+                    if maze.flow_at(x, y).is_some() {
+                        continue;
+                    }
+                    for dir in Direction::ALL {
+                        if !maze.is_open(x as i32, y as i32, dir) {
+                            continue;
+                        }
+                        let (dx, dy) = dir.delta();
+                        let next = ((x as i32 + dx) as u32, (y as i32 + dy) as u32);
+                        if maze.flow_at(next.0, next.1).is_some() {
+                            found = Some(((x, y), next, dir));
+                        }
+                    }
+                }
+            }
+            let Some((bank, water_cell, dir)) = found else {
+                continue;
+            };
+            assert_eq!(
+                walk_plan(&maze, bank, water_cell),
+                vec![dir],
+                "the tap on the water confirms the ride"
             );
             return;
         }
-        panic!("no seed in 0..20 laid a log to plan across");
+        panic!("no seed in 0..20 laid a log or water to confirm");
     }
 
     /// The first logged passage found, as (west/south cell, direction).

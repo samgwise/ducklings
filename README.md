@@ -108,9 +108,11 @@ cargo run -p game --example gen_placeholder_audio
 | Input | Action |
 | --- | --- |
 | Up / Down (keys or D-pad), click or tap | Choose a difficulty on the title screen |
-| WASD / arrow keys | Hop one tile |
-| D-pad (Steam Deck / Xbox controllers) | Hop one tile |
-| Click / tap | Hop along the corridor toward the point — stops at the click or the first hedge, never around corners; unreachable clicks get a head shake |
+| WASD / arrow keys | Walk that corridor — through its bends to the next decision point (a branch, dead end, log or water's edge) |
+| D-pad (Steam Deck / Xbox controllers) | Walk that corridor — through its bends to the next decision point |
+| Click / tap | Walk the corridor passing nearest the tap — through its bends to the next decision point (a branch, dead end, log or water's edge); a tap no corridor gets closer to is refused with a head shake |
+| Press the direction at a log, or tap the tile across it | Confirm a log flight — any ducklings in tow stay behind |
+| Press the direction at water, or tap the water tile | Enter the current and ride |
 | Tap / click across the current while riding | Hop out at that junction |
 | Tap / Enter / Space / A (controller) | Next level (on the level-complete overlay) |
 | N | Debug: jump to the level-complete overlay |

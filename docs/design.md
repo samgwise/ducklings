@@ -15,13 +15,20 @@ clutch in tow.
 - Grid-step movement. The duck hops one cell at a time with a short lerp;
   one move can be buffered mid-hop so quick turns feel responsive. Input
   comes from the keyboard (WASD/arrows), any connected controller's D-pad,
-  or a click/tap: the duck hops along the corridor toward the point — as
-  far as the click along the dominant axis, truncated at the first hedge,
-  never around corners. A key or D-pad press cancels a queued walk; a new
-  click replaces it. A walk that ends short of its click — or a click
-  straight into a hedge — gets an out-of-range cue: the duck shakes her
-  head (a decaying beak wag) with the bump thud. Hopping into a hedge is
-  the same bump: nothing moves, a soft thud plays.
+  or a click/tap, and every input walks corridors: a press walks the
+  corridor it names; a tap picks — of the walks open from her cell that
+  pass closer to the tapped point than she already is, its corridor hit
+  box — the nearest-ending one. The walk runs through bends, never
+  stopping mid-run, to the first decision point: a branch offering a
+  choice of ways, or a dead end. A queued walk never flies a log or steps
+  into the current — the walk ends at the log and the water's edge, and
+  the special move needs a deliberate ask: a press toward it, or a tap on
+  the tile across the log or the water itself, confirms it as a single
+  hop. A tap with no corridor passing closer — across a hedge, say — is
+  refused with the out-of-range cue: the duck shakes her head (a decaying
+  beak wag) with the bump thud. A key or D-pad press cancels a queued
+  walk; a new click replaces it. Hopping into a hedge is the same bump:
+  nothing moves, a soft thud plays.
 - Duckling trail. The duck's completed hops are recorded as a path history;
   duckling *i* drifts toward the position `SPACING × (i + 1)` steps back along
   that history, smoothed exponentially. The clutch forms a smooth conga line.
@@ -56,8 +63,10 @@ clutch in tow.
   always can fly one — a slower, arcing hop (`FLIGHT_HOP_SECS`) with a
   flutter and a size-up mid-air — but the clutch cannot follow: flying
   with ducklings in tow leaves the whole trail waiting on her take-off
-  side, and a click-walk crosses the same way (mum flies, the tail
-  strands). Generation therefore keeps a log only where the walk graph
+  side; a queued walk stops at the log, and crossing takes a deliberate
+  move (a press toward it, or a tap on the tile across) — which strands
+  any ducklings in tow. Generation therefore keeps a log only where the
+  walk graph
   (logs as walls, streams one-way) stays strongly connected from the
   start: every dry cell reachable on foot, so a stranded clutch can
   always walk home. On a barely-braided maze most passages are bridges
@@ -122,7 +131,7 @@ loops continuously; effects are fire-and-forget one-shots.
 | --- | --- | --- |
 | Hop | soft tick | one per completed hop |
 | Pickup | rising chirp | playback speed `1.0 + 0.06 × index` per clutch position |
-| Bump | low thud | hedge collision, or a log with the clutch aboard |
+| Bump | low thud | hedge collision, or a refused tap |
 | Flutter | wingbeat flutter | mum taking off over a fallen log |
 | Level complete | bell arpeggio fanfare | on the complete overlay |
 
