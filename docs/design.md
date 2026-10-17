@@ -52,6 +52,11 @@ clutch in tow.
   start: every dry cell reachable on foot, so the clutch is never asked
   to fly. On a barely-braided maze most passages are bridges and logs
   are sparse; loopier ponds fit their full count.
+- Fog of war. Meadow and Marsh levels sleep in the dark: a second tilemap
+  veils every tile mum's sight has not reached. Sight floods at most
+  `FOG_REVEAL_RADIUS` corridor steps through open passages — hedges block
+  it, streams carry it — lighting what it touches, and every cell seen
+  once stays dimly remembered. Pond plays fully lit.
 - Level flow. Reaching the exit with the full clutch completes the level.
   The next level's maze grows; seeds derive from the run seed plus the level
   index, so a run is reproducible from its seed.
@@ -92,6 +97,9 @@ input that opened a screen cannot also dismiss it.
   - Pond: 5×5 base, `1+n` ducklings, braid `0.4`.
   - Meadow: 7×5 base, `2+n` ducklings, braid `0.2`.
   - Marsh: 9×7 base, `3+n` ducklings, braid `0.05`.
+- `FOG_REVEAL_RADIUS = 4` — how many corridor steps mum's sight reaches;
+  the remembered veil sits at alpha 150 of 255. Fog falls on Meadow and
+  Marsh only.
 - `TITLE_TILE_SIZE = 20.0` — the lettering map's tile size (gameplay is
   `TILE_SIZE = 40.0`).
 

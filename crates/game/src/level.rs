@@ -18,6 +18,8 @@ pub struct LevelPlan {
     pub streams: u32,
     /// How many fallen logs the level carries.
     pub logs: u32,
+    /// Whether the maze sleeps under fog of war until mum explores it.
+    pub fog: bool,
 }
 
 /// The three maze difficulties, chosen on the title screen.
@@ -31,18 +33,20 @@ pub enum Difficulty {
 
 /// The difficulty curve: each level's maze grows and gains a duckling.
 /// Growth and caps are shared; the bases and braid carry the challenge —
-/// a lower braid leaves more dead-end traps, a higher one loops more.
+/// a lower braid leaves more dead-end traps, a higher one loops more — and
+/// fog of war falls on the two later difficulties only.
 pub fn level_plan(index: u32, difficulty: Difficulty) -> LevelPlan {
-    let (base_w, base_h, base_ducklings, braid) = match difficulty {
-        Difficulty::Pond => (5u32, 5u32, 1usize, 0.4),
-        Difficulty::Meadow => (7, 5, 2, 0.2),
-        Difficulty::Marsh => (9, 7, 3, 0.05),
+    let (base_w, base_h, base_ducklings, braid, fog) = match difficulty {
+        Difficulty::Pond => (5u32, 5u32, 1usize, 0.4, false),
+        Difficulty::Meadow => (7, 5, 2, 0.2, true),
+        Difficulty::Marsh => (9, 7, 3, 0.05, true),
     };
     LevelPlan {
         width: (base_w + 2 * index).min(25),
         height: (base_h + index).min(17),
         ducklings: (base_ducklings + index as usize).min(12),
         braid,
+        fog,
         // The first pond is dry; streams trickle in from the second, and
         // fallen logs from the third.
         streams: if index >= 1 {
@@ -202,5 +206,13 @@ mod tests {
         assert_eq!(level_plan(6, Difficulty::Meadow).logs, 2);
         assert_eq!(level_plan(10, Difficulty::Meadow).logs, 3);
         assert_eq!(level_plan(50, Difficulty::Meadow).logs, 3);
+    }
+
+    #[test]
+    fn fog_shades_the_later_difficulties() {
+        // The pond is fully lit; the meadow and the marsh sleep in the dark.
+        assert!(!level_plan(0, Difficulty::Pond).fog);
+        assert!(level_plan(0, Difficulty::Meadow).fog);
+        assert!(level_plan(0, Difficulty::Marsh).fog);
     }
 }

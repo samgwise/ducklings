@@ -9,6 +9,7 @@
 pub mod audio;
 pub mod duck;
 pub mod ducklings;
+pub mod fog;
 pub mod glyphs;
 pub mod hud;
 pub mod level;
@@ -63,6 +64,7 @@ pub fn run() {
             world::WorldPlugin,
             duck::DuckPlugin,
             ducklings::DucklingsPlugin,
+            fog::FogPlugin,
             audio::SoundPlugin,
             hud::HudPlugin,
             menus::MenusPlugin,

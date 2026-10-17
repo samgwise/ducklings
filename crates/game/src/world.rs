@@ -17,6 +17,7 @@ use maze::{Direction, Maze};
 
 use crate::duck::{BufferedMove, Duck, PathHistory, WalkPlan};
 use crate::ducklings::{Clutch, Duckling, Waiting, follow_step};
+use crate::fog;
 use crate::glyphs::title_lettering;
 use crate::level::{Difficulty, GamePhase, RunSeed, level_plan};
 
@@ -271,6 +272,10 @@ pub(crate) fn build_level(
             ..Default::default()
         },
     ));
+
+    // Fog of war, on the difficulties that play with it: a second tilemap
+    // over the level that hides the maze mum has yet to explore.
+    fog::build_fog(commands, &mut *images, (tile_w, tile_h), plan.fog);
 
     // One shared drop-shadow mesh and material. Centred under each bird —
     // not offset — so the duck's facing rotation never swings it around,

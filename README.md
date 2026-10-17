@@ -8,8 +8,11 @@ at junctions, and pluck swept ducklings as they pass. Fallen logs bar the
 clutch's way: mum can fly over one while she's still alone, but ducklings
 can't follow, so logs never guard the route home.
 
-Three difficulties shape the ponds: **Pond** (gentle loops), **Meadow**
-(the classic maze) and **Marsh** (dead ends and wits).
+Three difficulties shape the ponds: **Pond** (gentle loops, fully lit),
+**Meadow** (the classic maze) and **Marsh** (dead ends and wits). The two
+later difficulties sleep under fog of war: the maze reveals itself only as
+far as mum's sight reaches down its corridors, and explored cells stay
+dimly remembered.
 
 ## Downloading
 

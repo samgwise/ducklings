@@ -492,7 +492,7 @@ impl Maze {
                     if self.currents[mid_i].is_none()
                         && self.flow_at(beyond.0 as u32, beyond.1 as u32) == Some(flow)
                         && self.is_open(x as i32, y as i32, flow)
-                        && self.is_open(mid.0 as i32, mid.1 as i32, flow)
+                        && self.is_open(mid.0, mid.1, flow)
                     {
                         self.currents[mid_i] = Some(flow);
                         filled = true;
