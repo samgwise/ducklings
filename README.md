@@ -53,6 +53,11 @@ tarball built against glibc 2.35, so it runs on SteamOS / Steam Deck. Each
 archive holds the game binary with the `assets` directory beside it —
 extract it and run from inside the folder.
 
+Every green `main` build is also republished to the `nightly` release on
+the Releases page, so anyone can grab the latest build without sifting
+through workflow runs; the asset URLs stay stable across updates, e.g.
+`https://github.com/samgwise/ducklings/releases/download/nightly/ducklings-windows-x64.zip`.
+
 ## Eyeballing generated mazes and the title lettering
 
 Print an ASCII rendering of a generated maze for a given seed:
