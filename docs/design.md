@@ -28,15 +28,24 @@ clutch in tow.
 - Pickup. Ducklings wait at dead ends and distant cells. Hopping onto one
   collects it: it joins the trail and chirps, pitched a little higher for each
   sibling already in the line.
+- Stacked clutch. Waiting ducklings sharing a cell render as a little
+  stack — two on the diagonal, three in a pyramid, four in a grid, a
+  centred grid beyond, members slightly shrunken — so a pile the river
+  deposits on one let-off cell reads as a group, not one duck.
 - Streams. One-way runs of water cells (2–5 straight cells, from level
   index 1, count `1 + n/3` capped at 4) carry anything on them along the
   flow at `STREAM_HOP_SECS` per cell. The duck rides with her conga
-  trailing through the water; waiting ducklings caught in the current get
-  swept. Riding, a manual input toward an open side branch hops out (never
-  along the flow, never back upstream); at the run's end the current
-  carries one cell past onto the adjoining path. A swept duckling passing
-  onto or beside mum's cell is plucked into the trail. Same-direction runs
-  never leave one-cell dry gaps (the filler merges them). Streams are gated
+  holding in her wake, but a trail slot the current reaches once she is
+  clear of the water washes off the line: the duckling sweeps downstream
+  to the run's end and waits there for mum's return — bailing out mid-ride
+  leaves the whole clutch to the river. Waiting ducklings caught in the
+  current get swept. Riding, a manual input toward an open side branch
+  hops out (never along the flow, never back upstream); at the run's end
+  the current carries one cell past onto the adjoining path. A washed or
+  stranded duckling parks where it lands — stacked with any cellmates —
+  until mum hops onto it and gathers it back into the line.
+  Same-direction runs never leave one-cell dry gaps (the filler merges
+  them). Streams are gated
   for solvability: the movement graph (walking + one-way rides with
   junction exits and let-offs) must be strongly connected from the start —
   every dry cell reachable, and able to get back — so a one-way stream can
@@ -44,14 +53,15 @@ clutch in tow.
   escalation-ladder pattern).
 - Fallen logs. From level index 2, `1 + (n-2)/4` capped at 3 logs lie
   across open passages (never across a stream, never doubled up). Mum
-  alone can fly one — a slower, arcing hop (`FLIGHT_HOP_SECS`) with a
-  flutter and a size-up mid-air — but with ducklings in tow a log is
-  just a wall, and a click-walk refuses one the same way it refuses a
-  hedge. Generation therefore keeps a log only where the walk graph
+  always can fly one — a slower, arcing hop (`FLIGHT_HOP_SECS`) with a
+  flutter and a size-up mid-air — but the clutch cannot follow: flying
+  with ducklings in tow leaves the whole trail waiting on her take-off
+  side, and a click-walk crosses the same way (mum flies, the tail
+  strands). Generation therefore keeps a log only where the walk graph
   (logs as walls, streams one-way) stays strongly connected from the
-  start: every dry cell reachable on foot, so the clutch is never asked
-  to fly. On a barely-braided maze most passages are bridges and logs
-  are sparse; loopier ponds fit their full count.
+  start: every dry cell reachable on foot, so a stranded clutch can
+  always walk home. On a barely-braided maze most passages are bridges
+  and logs are sparse; loopier ponds fit their full count.
 - Fog of war. Meadow and Marsh levels sleep in the dark: a second tilemap
   veils every tile mum's sight has not reached. Sight floods at most
   `FOG_REVEAL_RADIUS` corridor steps through open passages — hedges block
@@ -128,12 +138,16 @@ Volumes: music `0.6`, effects `0.9` (per-playback, set in `audio.rs`).
   retrying salts when a maze is too tree-ish to host every log (stream
   cells can absorb a braid's loops) and keeping the run with the most.
   The ASCII example renders logs as `==`/`‖` across a passage.
-- Ducklings spawn on dead ends, farthest first (BFS from the start), padded
-  with the next-most-distant cells when braiding leaves too few.
+- Ducklings spawn on dry dead ends, farthest first (BFS from the start),
+  padded with the next-most-distant dry cells when braiding leaves too few
+  — never on the water, where a waiting duckling is swept off before it
+  can be found.
 - The exit is the cell farthest from the start.
 
 ## Out of scope (for now)
 
+- Idle duckling wandering — stray hops around a waiting pile — as a
+  Marsh-only treat, once the strays can be kept off logs and water.
 - Generative in-process score built on `scalevec` (ambience driven by clutch
   size is the natural stretch).
 - Real art, hop animations beyond the lerp, shaders, title screen,

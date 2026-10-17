@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use maze::{Direction, Maze};
 
 use crate::audio::SfxEvent;
-use crate::ducklings::Clutch;
+use crate::ducklings::{Clutch, TrailStranded};
 use crate::level::GamePhase;
 use crate::world::{MainCamera, MazeRes, TILE_SIZE, cell_world_pos};
 
@@ -155,6 +155,7 @@ fn hop(
     maze_res: Res<MazeRes>,
     clutch: Res<Clutch>,
     mut sfx: MessageWriter<SfxEvent>,
+    mut strand_trail: MessageWriter<TrailStranded>,
     mut commands: Commands,
     mover: Single<
         (
@@ -259,21 +260,15 @@ fn hop(
         sfx.write(SfxEvent::Bump);
         return;
     }
-    // A fallen log bars the way when the clutch is in tow — but mum alone
-    // spreads her wings and flies it: a slower, arcing hop with a flutter.
+    // Mum always spreads her wings over a fallen log — a slower, arcing
+    // hop with a flutter — but the clutch cannot follow: flying with
+    // ducklings in tow strands the whole trail on her take-off side.
     let flight = maze_res.maze.is_logged(x as i32, y as i32, dir);
     if flight {
-        if clutch.collected > 0 {
-            sfx.write(SfxEvent::Bump);
-            if manual.is_none() && flow.is_none() {
-                // The blocked step came from the click-walk plan; every
-                // step behind it is stale now.
-                plan.queue.clear();
-                plan.target = None;
-            }
-            return;
-        }
         sfx.write(SfxEvent::Flutter);
+        if clutch.collected > 0 {
+            strand_trail.write(TrailStranded);
+        }
     }
     let (dx, dy) = dir.delta();
     let to_cell = ((x as i32 + dx) as u32, (y as i32 + dy) as u32);
@@ -318,7 +313,6 @@ fn facing_angle(dir: Direction) -> f32 {
 fn pointer_walk(
     clicks: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
-    clutch: Res<Clutch>,
     mut sfx: MessageWriter<SfxEvent>,
     mut commands: Commands,
     window: Single<&Window>,
@@ -343,11 +337,9 @@ fn pointer_walk(
     let cells = (maze_res.maze.width(), maze_res.maze.height());
     let cell = world_to_cell(cells, world);
     let (duck_entity, duck, mut plan) = target.into_inner();
-    // A plan never crosses a log she couldn't fly with the clutch aboard —
-    // the click refuses on the spot, like a hedge.
-    let steps = walk_plan(&maze_res.maze, duck.cell, cell, clutch.collected == 0);
+    let steps = walk_plan(&maze_res.maze, duck.cell, cell);
     if steps.is_empty() && cell != duck.cell {
-        // Straight into a hedge (or an unflyable log): refuse on the spot.
+        // Straight into a hedge: refuse on the spot.
         sfx.write(SfxEvent::Bump);
         commands.entity(duck_entity).insert(HeadShake::default());
         plan.queue.clear();
@@ -393,9 +385,9 @@ fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
 
 /// The straight-corridor hops from `from` toward `target`: the dominant
 /// axis only, as far as the target along that axis, truncated at the first
-/// hedge — a click never navigates the duck around corners. With the
-/// clutch aboard (`can_fly` false) a fallen log bars the walk like a hedge.
-fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32), can_fly: bool) -> Vec<Direction> {
+/// hedge — a click never navigates the duck around corners. A fallen log
+/// does not bar the walk: mum flies it, stranding any ducklings in tow.
+fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction> {
     let dx = target.0 as i32 - from.0 as i32;
     let dy = target.1 as i32 - from.1 as i32;
     let (dir, steps) = if dx.abs() >= dy.abs() {
@@ -420,7 +412,7 @@ fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32), can_fly: bool) -
     let mut plan = Vec::new();
     let (mut x, mut y) = (from.0 as i32, from.1 as i32);
     for _ in 0..steps {
-        if !maze.is_open(x, y, dir) || (!can_fly && maze.is_logged(x, y, dir)) {
+        if !maze.is_open(x, y, dir) {
             break;
         }
         let (dx, dy) = dir.delta();
@@ -456,7 +448,7 @@ mod tests {
             let (dx, dy) = dir.delta();
             let run = open_run(&maze, dir);
             let target = ((2 + dx * 5).max(0) as u32, (2 + dy * 5).max(0) as u32);
-            let plan = walk_plan(&maze, (2, 2), target, true);
+            let plan = walk_plan(&maze, (2, 2), target);
             assert_eq!(plan.len(), run as usize, "run {dir:?}");
             assert!(plan.iter().all(|&d| d == dir), "run {dir:?}");
         }
@@ -466,9 +458,9 @@ mod tests {
     fn walk_plans_take_the_dominant_axis_only() {
         let maze = Maze::generate(9, 5, 3, 0.0);
         // A diagonal click never turns a corner: one axis only is walked.
-        let plan = walk_plan(&maze, (4, 2), (6, 3), true);
+        let plan = walk_plan(&maze, (4, 2), (6, 3));
         assert!(plan.iter().all(|&d| d == Direction::East));
-        let plan = walk_plan(&maze, (4, 2), (5, 5), true);
+        let plan = walk_plan(&maze, (4, 2), (5, 5));
         assert!(plan.iter().all(|&d| d == Direction::North));
     }
 
@@ -492,14 +484,14 @@ mod tests {
     #[test]
     fn clicking_the_duck_plans_nothing() {
         let maze = Maze::generate(5, 5, 1, 0.0);
-        assert!(walk_plan(&maze, (2, 2), (2, 2), true).is_empty());
+        assert!(walk_plan(&maze, (2, 2), (2, 2)).is_empty());
     }
 
     #[test]
-    fn walk_plans_cross_a_log_only_when_flying() {
+    fn walk_plans_cross_a_log() {
         // Some seed or another lays a log across a corridor; a click onto
-        // the cell across it flies when mum is solo and stops short when
-        // the clutch rides.
+        // the cell across it plans the crossing — mum flies it, stranding
+        // any ducklings in tow.
         for seed in 0..20u64 {
             let maze = Maze::with_obstacles(11, 9, seed, 0.2, 0, 3);
             let Some((from, dir)) = logged_passage(&maze) else {
@@ -507,11 +499,10 @@ mod tests {
             };
             let (dx, dy) = dir.delta();
             let target = ((from.0 as i32 + dx) as u32, (from.1 as i32 + dy) as u32);
-            let flying = walk_plan(&maze, from, target, true);
-            assert_eq!(flying, vec![dir], "solo mum flies the log");
-            assert!(
-                walk_plan(&maze, from, target, false).is_empty(),
-                "the clutch stops short of the log"
+            assert_eq!(
+                walk_plan(&maze, from, target),
+                vec![dir],
+                "the click flies the log"
             );
             return;
         }

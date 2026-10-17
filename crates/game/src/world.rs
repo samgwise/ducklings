@@ -356,7 +356,8 @@ fn farthest_cell(maze: &Maze, distances: &[Option<u32>], cells: (u32, u32)) -> (
 }
 
 /// `count` duckling spots: dead ends first (farthest from the start), then
-/// the next most distant ordinary cells. Never the start or the exit.
+/// the next most distant ordinary cells. Never the start, the exit, or the
+/// water — a duckling on a stream is swept off before it can be found.
 fn duckling_spots(
     maze: &Maze,
     start: (u32, u32),
@@ -371,7 +372,9 @@ fn duckling_spots(
         .filter_map(|(i, distance)| {
             distance.map(|steps| (steps, (i as u32 % maze.width(), i as u32 / maze.width())))
         })
-        .filter(|&(_, cell)| cell != start && cell != exit)
+        .filter(|&(_, cell)| {
+            cell != start && cell != exit && maze.flow_at(cell.0, cell.1).is_none()
+        })
         .collect();
     // Farthest first; ties fall back to row-major order for determinism.
     ordered.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -873,6 +876,12 @@ mod tests {
             let spots = duckling_spots(&maze, (0, 0), exit, 3);
             assert!(spots.len() <= 3);
             assert!(spots.iter().all(|&cell| cell != (0, 0) && cell != exit));
+            // Spots are dry — a duckling on the current is swept off
+            // before it can be found.
+            assert!(
+                spots.iter().all(|&cell| maze.flow_at(cell.0, cell.1).is_none()),
+                "every spot is dry"
+            );
             // Spots are unique.
             let mut sorted = spots.clone();
             sorted.sort();
