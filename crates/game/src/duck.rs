@@ -228,13 +228,29 @@ fn hop(
         {
             (dir, HOP_SECS)
         }
-        // Otherwise the current carries her — and sweeps away any queued
-        // walk, whose remaining steps are stale the moment she lands in
-        // the water.
+        // Otherwise the current carries her — sweeping away any queued
+        // walk whose steps have gone stale — unless the queue's own next
+        // step is a valid hop out of the current: a tap across the stream
+        // while riding. Touch players have no direction keys, so that tap
+        // is their only hop-out at junctions (and the rest of the walk
+        // keeps its bearing); a tap along the current just rides.
         (_, Some(f)) => {
-            plan.queue.clear();
-            plan.target = None;
-            (f, STREAM_HOP_SECS)
+            let hop_out = ride_step(
+                f,
+                plan.queue.front().copied(),
+                |dir| {
+                    let (x, y) = duck.cell;
+                    maze_res.maze.is_open(x as i32, y as i32, dir)
+                },
+            );
+            if hop_out.is_none() {
+                plan.queue.clear();
+                plan.target = None;
+            }
+            match hop_out {
+                Some(dir) => (dir, HOP_SECS),
+                None => (f, STREAM_HOP_SECS),
+            }
         }
     };
     let (x, y) = duck.cell;
@@ -272,6 +288,18 @@ fn hop(
         to_cell,
         flight,
     });
+}
+
+/// The hop a water-bound duck takes with no direction keys pressed: the
+/// queued step if it is itself a valid hop out of the current (a tap
+/// across the stream — touch players' only junction hop-out), else `None`
+/// and the current carries her.
+fn ride_step(
+    flow: Direction,
+    queued: Option<Direction>,
+    side_open: impl Fn(Direction) -> bool,
+) -> Option<Direction> {
+    queued.filter(|&dir| dir != flow && dir != flow.opposite() && side_open(dir))
 }
 
 /// World-space yaw a hop in `dir` points the duck (east is zero).
@@ -442,6 +470,23 @@ mod tests {
         assert!(plan.iter().all(|&d| d == Direction::East));
         let plan = walk_plan(&maze, (4, 2), (5, 5), true);
         assert!(plan.iter().all(|&d| d == Direction::North));
+    }
+
+    #[test]
+    fn a_tap_across_the_current_hops_out_of_the_ride() {
+        let open = |dir: Direction| dir == Direction::North;
+        // A tap across the stream (here: north) is taken as the hop-out…
+        assert_eq!(
+            ride_step(Direction::East, Some(Direction::North), open),
+            Some(Direction::North)
+        );
+        // …a tap along the current rides, upstream is refused, and a
+        // hopped-shut side branch is refused too.
+        assert_eq!(ride_step(Direction::East, Some(Direction::East), open), None);
+        assert_eq!(ride_step(Direction::East, Some(Direction::West), open), None);
+        assert_eq!(ride_step(Direction::East, Some(Direction::South), open), None);
+        // No tap: the current carries her.
+        assert_eq!(ride_step(Direction::East, None, open), None);
     }
 
     #[test]

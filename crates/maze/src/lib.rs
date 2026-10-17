@@ -346,7 +346,10 @@ impl Maze {
     /// Carve up to `count` straight stream runs: each picks a random cell
     /// (never the game's start corner) and direction, then follows open
     /// passages for 2–5 cells without touching existing stream cells. The
-    /// run must end with an open, dry let-off one cell past its last cell.
+    /// run must end with an open, dry let-off one cell past its last cell,
+    /// and no neighbour may flow into the new run from another direction —
+    /// a current dumped onto differently-flowing water would strand its
+    /// rider (and fool the solvability gate's dry-let-off assumption).
     fn carve_streams(&mut self, mut rng: SmallRng, count: u32) {
         let mut placed = 0;
         let mut attempts = 0;
@@ -356,6 +359,11 @@ impl Maze {
             let y = rng.random_range(0..self.height);
             let dir = Direction::ALL[rng.random_range(0..4)];
             let run_len = rng.random_range(2..=5);
+            // A run's first cell must be dry — marking a flowing cell
+            // would flip an existing run's tail into a head-on current.
+            if self.flow_at(x, y).is_some() {
+                continue;
+            }
 
             let mut cells = vec![(x, y)];
             let mut cur = (x, y);
@@ -384,6 +392,24 @@ impl Maze {
                 || self.flow_at(let_off.0, let_off.1).is_some()
                 || let_off == (0, 0)
             {
+                continue;
+            }
+            // Any neighbour flowing INTO a marked cell must flow the same
+            // way — an opposing or crossing inflow would land its rider on
+            // water flowing elsewhere.
+            let strands_a_rider = cells.iter().any(|&(cx, cy)| {
+                Direction::ALL.iter().any(|&side| match self.neighbour(cx, cy, side) {
+                    Some((nx, ny)) => match self.flow_at(nx, ny) {
+                        Some(inflow) if inflow != dir => {
+                            let (idx, idy) = inflow.delta();
+                            (nx as i32 + idx, ny as i32 + idy) == (cx as i32, cy as i32)
+                        }
+                        _ => false,
+                    },
+                    None => false,
+                })
+            });
+            if strands_a_rider {
                 continue;
             }
             for &(cx, cy) in &cells {
@@ -460,8 +486,13 @@ impl Maze {
                         continue;
                     }
                     let mid_i = self.index(mid.0 as u32, mid.1 as u32);
+                    // Only merge across rideable water: the passages into
+                    // and out of the gap must be open, or a rider would
+                    // bump against a hedge mid-stream.
                     if self.currents[mid_i].is_none()
                         && self.flow_at(beyond.0 as u32, beyond.1 as u32) == Some(flow)
+                        && self.is_open(x as i32, y as i32, flow)
+                        && self.is_open(mid.0 as i32, mid.1 as i32, flow)
                     {
                         self.currents[mid_i] = Some(flow);
                         filled = true;
@@ -703,6 +734,145 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_flows_never_conflict() {
+        // No run may strand another: along every stream cell's flow the
+        // next cell is either dry (the let-off) or flows the same way —
+        // never an opposing or crossing current — and the passage along
+        // the flow is open to ride. Checked for streams alone and for the
+        // full obstacles constructor the game builds levels with.
+        for seed in 0..40u64 {
+            for maze in [
+                Maze::with_streams(13, 11, seed, 0.2, 4),
+                Maze::with_obstacles(13, 11, seed, 0.2, 4, 3),
+            ]
+            .iter()
+            {
+                assert_flows_never_conflict(maze);
+            }
+        }
+    }
+
+    fn assert_flows_never_conflict(maze: &Maze) {
+        for y in 0..maze.height() {
+            for x in 0..maze.width() {
+                let Some(flow) = maze.flow_at(x, y) else {
+                    continue;
+                };
+                let (dx, dy) = flow.delta();
+                let next = (x as i32 + dx, y as i32 + dy);
+                assert!(
+                    next.0 >= 0
+                        && next.1 >= 0
+                        && next.0 < maze.width() as i32
+                        && next.1 < maze.height() as i32,
+                    "the flow at {x},{y} stays in bounds"
+                );
+                assert!(
+                    maze.is_open(x as i32, y as i32, flow),
+                    "the flow at {x},{y} crosses an open passage"
+                );
+                let next_flow = maze.flow_at(next.0 as u32, next.1 as u32);
+                assert!(
+                    next_flow.is_none() || next_flow == Some(flow),
+                    "the flow at {x},{y} runs into {next_flow:?}"
+                );
+            }
+        }
+    }
+
+    /// Game-exact dry-cell successors from `from` (clutch-conservative:
+    /// logs bar everything): walk to a dry neighbour, or enter water and
+    /// ride — hop by hop along the current, hop-out at every open side
+    /// branch, chaining onto differently-flowing water, depositing on the
+    /// first dry cell — exactly as the game's `hop` system behaves.
+    fn dry_successors(maze: &Maze, from: (u32, u32)) -> Vec<usize> {
+        let mut out = Vec::new();
+        for dir in Direction::ALL {
+            if !maze.is_open(from.0 as i32, from.1 as i32, dir)
+                || maze.is_logged(from.0 as i32, from.1 as i32, dir)
+            {
+                continue;
+            }
+            let (nx, ny) = maze
+                .neighbour(from.0, from.1, dir)
+                .expect("an open passage is in bounds");
+            if maze.flow_at(nx, ny).is_none() {
+                out.push(maze.index(nx, ny));
+                continue;
+            }
+            let mut cur = (nx, ny);
+            loop {
+                let flow = maze
+                    .flow_at(cur.0, cur.1)
+                    .expect("a ride starts on a stream cell");
+                for side in Direction::ALL {
+                    if side == flow || side == flow.opposite() {
+                        continue;
+                    }
+                    if !maze.is_open(cur.0 as i32, cur.1 as i32, side)
+                        || maze.is_logged(cur.0 as i32, cur.1 as i32, side)
+                    {
+                        continue;
+                    }
+                    let (sx, sy) = maze
+                        .neighbour(cur.0, cur.1, side)
+                        .expect("an open passage is in bounds");
+                    if maze.flow_at(sx, sy).is_none() {
+                        out.push(maze.index(sx, sy));
+                    }
+                }
+                let (dx, dy) = flow.delta();
+                let next = (cur.0 as i32 + dx, cur.1 as i32 + dy);
+                if maze.flow_at(next.0 as u32, next.1 as u32) == Some(flow) {
+                    cur = (next.0 as u32, next.1 as u32);
+                } else {
+                    out.push(maze.index(next.0 as u32, next.1 as u32));
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_clutch_can_always_get_home() {
+        // Game-exact reachability over generated levels: from (0, 0) every
+        // dry cell is reachable AND every dry cell can get back — rides
+        // deposit on dry ground, logs bar the clutch, side hops exit a
+        // ride. A failure here is a playable trap like the play-test one.
+        for seed in 0..100u64 {
+            for &(w, h, braid) in &[(13u32, 11u32, 0.2), (25, 17, 0.05), (9, 7, 0.4)] {
+                let maze = Maze::with_obstacles(w, h, seed, braid, 4, 3);
+                let dry_count = (0..(maze.height() * maze.width()) as usize)
+                    .filter(|&i| maze.currents[i].is_none())
+                    .count();
+                let edges: Vec<(usize, usize)> = (0..maze.height())
+                    .flat_map(|y| (0..maze.width()).map(move |x| (x, y)))
+                    .filter(|&(x, y)| maze.flow_at(x, y).is_none())
+                    .flat_map(|from| {
+                        dry_successors(&maze, from)
+                            .into_iter()
+                            .map(|to| (maze.index(from.0, from.1), to))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                let nodes = maze.currents.len();
+                let start = maze.index(0, 0);
+                assert!(
+                    Maze::reaches(&edges, start, nodes, dry_count)
+                        && Maze::reaches(
+                            &edges.iter().map(|&(a, b)| (b, a)).collect::<Vec<_>>(),
+                            start,
+                            nodes,
+                            dry_count
+                        ),
+                    "every dry cell reachable both ways at {w}x{h} braid {braid} seed {seed}"
+                );
             }
         }
     }

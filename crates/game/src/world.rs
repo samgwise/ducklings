@@ -404,14 +404,25 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
         // Between cell (tx/2 - 1, ty/2) and (tx/2, ty/2): floor iff the
         // west cell's east passage is carved — water, chevron along the
         // flow, when that passage carries the current, or a fallen log
-        // lying across it.
+        // lying across it. The current crosses either way: the west cell
+        // flowing east or the east cell flowing west — checking one end
+        // only used to split westbound runs into alternating rapids.
         (0, 1) if tx >= 1 && tx + 1 < tw => {
             let west = ((tx - 1) / 2, ty / 2);
+            let east = (west.0 + 1, west.1);
             if maze.is_logged(west.0 as i32, west.1 as i32, Direction::East) {
                 LOG_HORIZONTAL_ATLAS_INDEX
             } else {
-                match maze.flow_at(west.0, west.1) {
-                    Some(Direction::East) => water_atlas_index(Direction::East),
+                let crossing = match (
+                    maze.flow_at(west.0, west.1),
+                    maze.flow_at(east.0, east.1),
+                ) {
+                    (Some(Direction::East), _) => Some(Direction::East),
+                    (_, Some(Direction::West)) => Some(Direction::West),
+                    _ => None,
+                };
+                match crossing {
+                    Some(flow) => water_atlas_index(flow),
                     _ if maze.is_open(west.0 as i32, west.1 as i32, Direction::East) => {
                         FLOOR_ATLAS_INDEX
                     }
@@ -420,15 +431,24 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
             }
         }
         // Between cell (tx/2, ty/2 - 1) and (tx/2, ty/2): floor iff the
-        // south cell's north passage is carved — water along the flow, or
-        // a log across it.
+        // south cell's north passage is carved — water along the flow
+        // (southbound runs included), or a log across it.
         (1, 0) if ty >= 1 && ty + 1 < th => {
             let south = (tx / 2, (ty - 1) / 2);
+            let north = (south.0, south.1 + 1);
             if maze.is_logged(south.0 as i32, south.1 as i32, Direction::North) {
                 LOG_VERTICAL_ATLAS_INDEX
             } else {
-                match maze.flow_at(south.0, south.1) {
-                    Some(Direction::North) => water_atlas_index(Direction::North),
+                let crossing = match (
+                    maze.flow_at(south.0, south.1),
+                    maze.flow_at(north.0, north.1),
+                ) {
+                    (Some(Direction::North), _) => Some(Direction::North),
+                    (_, Some(Direction::South)) => Some(Direction::South),
+                    _ => None,
+                };
+                match crossing {
+                    Some(flow) => water_atlas_index(flow),
                     _ if maze.is_open(south.0 as i32, south.1 as i32, Direction::North) => {
                         FLOOR_ATLAS_INDEX
                     }
@@ -482,16 +502,16 @@ fn water_chevron(direction: Direction, px: u32, py: u32, tile_px: u32) -> bool {
             py = s - 1 - py;
         }
         Direction::North => {
-            // 90° anticlockwise: the apex swings to the top.
-            let swap = px;
-            px = py;
-            py = s - 1 - swap;
-        }
-        Direction::South => {
-            // 90° clockwise: the apex swings to the bottom.
+            // The apex swings to the top.
             let swap = px;
             px = s - 1 - py;
             py = swap;
+        }
+        Direction::South => {
+            // The apex swings to the bottom.
+            let swap = px;
+            px = py;
+            py = s - 1 - swap;
         }
     }
     let c = s / 2;
@@ -753,6 +773,88 @@ mod tests {
         }
         assert!(saw_horizontal, "some seed laid a horizontal log");
         assert!(saw_vertical, "some seed laid a vertical log");
+    }
+
+    #[test]
+    fn streams_render_as_continuous_water() {
+        // Every passage a current crosses renders as water pointing along
+        // the flow — whichever way the stream runs — so a run never breaks
+        // into alternating rapids and dry floor.
+        let (exit, size) = ((0u32, 0u32), (27u32, 23u32));
+        let mut saw_horizontal = false;
+        let mut saw_vertical = false;
+        for seed in 0..10u64 {
+            let maze = Maze::with_streams(13, 11, seed, 0.2, 4);
+            for y in 0..11u32 {
+                for x in 0..13u32 {
+                    let Some(flow) = maze.flow_at(x, y) else {
+                        continue;
+                    };
+                    // Generation keeps the let-off in bounds, so the tile
+                    // along the flow is always a passage tile the guard
+                    // arms accept.
+                    let tile = match flow {
+                        Direction::East => (2 * x + 2, 2 * y + 1),
+                        Direction::West => (2 * x, 2 * y + 1),
+                        Direction::North => (2 * x + 1, 2 * y + 2),
+                        Direction::South => (2 * x + 1, 2 * y),
+                    };
+                    saw_horizontal |= matches!(flow, Direction::East | Direction::West);
+                    saw_vertical |= matches!(flow, Direction::North | Direction::South);
+                    assert_eq!(
+                        tile_kind(&maze, exit, tile, size),
+                        water_atlas_index(flow),
+                        "the {flow:?} passage out of {x},{y}"
+                    );
+                }
+            }
+        }
+        assert!(saw_horizontal, "some seed ran a stream east or west");
+        assert!(saw_vertical, "some seed ran a stream north or south");
+    }
+
+    #[test]
+    fn water_chevrons_point_their_direction() {
+        // The apex — the chevron's extreme pixels along the pointing axis —
+        // must hug the tile's axis centre. With the vertical rotations
+        // swapped, the north and south arrows pointed backwards.
+        const TILE_PX: u32 = 40; // the gameplay atlas' tile size
+        let centre = (TILE_PX / 2) as i32;
+        let chevron = |direction: Direction| -> Vec<(i32, i32)> {
+            let mut points = Vec::new();
+            for py in 0..TILE_PX {
+                for px in 0..TILE_PX {
+                    if water_chevron(direction, px, py, TILE_PX) {
+                        points.push((px as i32, py as i32));
+                    }
+                }
+            }
+            assert!(!points.is_empty(), "{direction:?} draws a chevron");
+            points
+        };
+        // For each direction: key picks the pointing axis (negated where
+        // the apex is the minimum), cross picks the off-axis coordinate —
+        // and the apex pixels must hug the tile's axis centre.
+        let assert_apex_centred = |
+            points: Vec<(i32, i32)>,
+            key: &dyn Fn(&(i32, i32)) -> i32,
+            cross: &dyn Fn(&(i32, i32)) -> i32,
+        | {
+            let apex = points.iter().map(|p| key(p)).max().unwrap();
+            let off_axis: Vec<i32> = points
+                .iter()
+                .filter(|p| key(p) == apex)
+                .map(|p| cross(p))
+                .collect();
+            assert!(
+                off_axis.iter().all(|&v| (v - centre).abs() <= 2),
+                "the apex hugs the axis centre, got {off_axis:?}"
+            );
+        };
+        assert_apex_centred(chevron(Direction::East), &|p| p.0, &|p| p.1);
+        assert_apex_centred(chevron(Direction::West), &|p| -p.0, &|p| p.1);
+        assert_apex_centred(chevron(Direction::North), &|p| -p.1, &|p| p.0);
+        assert_apex_centred(chevron(Direction::South), &|p| p.1, &|p| p.0);
     }
 
     #[test]
