@@ -76,6 +76,12 @@ clutch in tow.
   `FOG_REVEAL_RADIUS` corridor steps through open passages — hedges block
   it, streams carry it — lighting what it touches, and every cell seen
   once stays dimly remembered. Pond plays fully lit.
+- Exit cues. Once the exit tile is revealed — always on the pond; on the
+  fogged levels once seen — an arrow rides the viewport edge inset by a
+  margin, pointing along the camera→exit ray whenever the mat lies
+  off-screen. When the exit is in view and the whole clutch is gathered,
+  a soft white outline around the mat pulses — a rim of white behind the
+  tile, beating between two alphas — to draw the eye for the final walk.
 - Level flow. Reaching the exit with the full clutch completes the level.
   The next level's maze grows; seeds derive from the run seed plus the level
   index, so a run is reproducible from its seed.
@@ -119,6 +125,10 @@ input that opened a screen cannot also dismiss it.
 - `FOG_REVEAL_RADIUS = 4` — how many corridor steps mum's sight reaches;
   the remembered veil sits at alpha 150 of 255. Fog falls on Meadow and
   Marsh only.
+- `ARROW_MARGIN_PX = 28`, `ARROW_SIZE = 26` — the off-screen exit arrow's
+  inset from the viewport edge and its radius. The mat outline's beat is
+  `PULSE_PERIOD_SECS = 1.1`, rim `OUTLINE_GROWTH = 0.3` of a tile, alpha
+  sweeping `PULSE_MIN_ALPHA = 0.15` to `PULSE_MAX_ALPHA = 0.95`.
 - `TITLE_TILE_SIZE = 20.0` — the lettering map's tile size (gameplay is
   `TILE_SIZE = 40.0`).
 
