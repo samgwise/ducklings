@@ -7,6 +7,7 @@
 //! real modules instead of duplicating them.
 
 pub mod audio;
+pub mod bridge;
 pub mod duck;
 pub mod ducklings;
 pub mod exit;
@@ -67,6 +68,7 @@ pub fn run() {
             ducklings::DucklingsPlugin,
             fog::FogPlugin,
             exit::ExitPlugin,
+            bridge::BridgePlugin,
             audio::SoundPlugin,
             hud::HudPlugin,
             menus::MenusPlugin,

@@ -15,6 +15,7 @@ use bevy_ecs_tilemap::prelude::*;
 
 use maze::{Direction, Maze};
 
+use crate::bridge;
 use crate::duck::{BufferedMove, Duck, PathHistory, WalkPlan};
 use crate::ducklings::{Clutch, Duckling, Waiting, follow_step};
 use crate::exit;
@@ -51,7 +52,9 @@ const WATER_NORTH_ATLAS_INDEX: u32 = 5;
 const WATER_SOUTH_ATLAS_INDEX: u32 = 6;
 const LOG_HORIZONTAL_ATLAS_INDEX: u32 = 7;
 const LOG_VERTICAL_ATLAS_INDEX: u32 = 8;
-const ATLAS_TILES: u32 = 9;
+const DEEP_ATLAS_INDEX: u32 = 9;
+const SPOT_ATLAS_INDEX: u32 = 10;
+const ATLAS_TILES: u32 = 11;
 /// Atlas columns of the title map's plain atlas: letter, hedge.
 const LETTER_ATLAS_INDEX: u32 = 0;
 const TITLE_HEDGE_ATLAS_INDEX: u32 = 1;
@@ -199,22 +202,44 @@ pub(crate) fn build_level(
     plan: &crate::level::LevelPlan,
     seed: u64,
 ) {
-    let maze = Maze::with_obstacles(
-        plan.width,
-        plan.height,
-        seed,
-        plan.braid,
-        plan.streams,
-        plan.logs,
-    );
+    let maze = if plan.bridge {
+        Maze::with_channel(plan.width, plan.height, seed, plan.braid, plan.islands)
+    } else {
+        Maze::with_obstacles(
+            plan.width,
+            plan.height,
+            seed,
+            plan.braid,
+            plan.streams,
+            plan.logs,
+        )
+    };
     let start = (0u32, 0u32);
     let cells = (plan.width, plan.height);
-    // The exit is the farthest cell from the start.
-    let distances = maze.distances_from(start);
-    let exit = farthest_cell(&maze, &distances, cells);
-    // Ducklings wait at dead ends, farthest first, padded with the next
-    // most distant cells when braiding leaves too few dead ends.
-    let spots = duckling_spots(&maze, start, exit, plan.ducklings);
+    // The exit is the farthest cell from the start — on bridge levels, the
+    // farthest once every gap is planked, so it lands on the far bank.
+    let exit = if plan.bridge {
+        bridge::far_exit(&maze, start)
+    } else {
+        let distances = maze.distances_from(start);
+        farthest_cell(&maze, &distances, cells)
+    };
+    // Ducklings wait at dead ends, farthest first — on bridge levels the
+    // chain islands hold them first, since bridging to them is the
+    // level's point — padded with the next most distant cells when
+    // braiding leaves too few dead ends.
+    let mut spots = Vec::new();
+    if plan.bridge {
+        for island in maze.islands() {
+            if maze.gap_sides(island.0, island.1) == 2 {
+                spots.push(island);
+            }
+        }
+        spots.truncate(plan.ducklings);
+    }
+    let bank_spots = duckling_spots(&maze, start, exit, plan.ducklings - spots.len());
+    spots.extend(bank_spots);
+    spots.truncate(plan.ducklings);
 
     commands.insert_resource(MazeRes {
         maze: maze.clone(),
@@ -225,6 +250,10 @@ pub(crate) fn build_level(
         collected: 0,
         total: spots.len(),
     });
+    // Bridge levels carry the plank stock — two planks per chain island —
+    // and a fresh planked set.
+    let chain_gaps = if plan.bridge { 2 * plan.islands } else { 0 };
+    bridge::build_bridge(commands, meshes, materials, chain_gaps);
 
     // The atlas is procedural so the prototype needs no art assets.
     let atlas: Handle<Image> = images.add(build_atlas(TILE_SIZE));
@@ -405,10 +434,15 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
     let (tw, th) = size;
     match (tx % 2, ty % 2) {
         (1, 1) => {
-            if (tx / 2, ty / 2) == exit {
+            let cell = (tx / 2, ty / 2);
+            if cell == exit {
                 EXIT_ATLAS_INDEX
-            } else if let Some(flow) = maze.flow_at(tx / 2, ty / 2) {
+            } else if maze.is_deep(cell.0, cell.1) {
+                DEEP_ATLAS_INDEX
+            } else if let Some(flow) = maze.flow_at(cell.0, cell.1) {
                 water_atlas_index(flow)
+            } else if maze.is_spot(cell.0, cell.1) {
+                SPOT_ATLAS_INDEX
             } else {
                 FLOOR_ATLAS_INDEX
             }
@@ -422,7 +456,9 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
         (0, 1) if tx >= 1 && tx + 1 < tw => {
             let west = ((tx - 1) / 2, ty / 2);
             let east = (west.0 + 1, west.1);
-            if maze.is_logged(west.0 as i32, west.1 as i32, Direction::East) {
+            if maze.is_deep(west.0, west.1) || maze.is_deep(east.0, east.1) {
+                DEEP_ATLAS_INDEX
+            } else if maze.is_logged(west.0 as i32, west.1 as i32, Direction::East) {
                 LOG_HORIZONTAL_ATLAS_INDEX
             } else {
                 let crossing = match (
@@ -448,7 +484,9 @@ fn tile_kind(maze: &Maze, exit: (u32, u32), tile: (u32, u32), size: (u32, u32)) 
         (1, 0) if ty >= 1 && ty + 1 < th => {
             let south = (tx / 2, (ty - 1) / 2);
             let north = (south.0, south.1 + 1);
-            if maze.is_logged(south.0 as i32, south.1 as i32, Direction::North) {
+            if maze.is_deep(south.0, south.1) || maze.is_deep(north.0, north.1) {
+                DEEP_ATLAS_INDEX
+            } else if maze.is_logged(south.0 as i32, south.1 as i32, Direction::North) {
                 LOG_VERTICAL_ATLAS_INDEX
             } else {
                 let crossing = match (
@@ -601,6 +639,9 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
     const WATER_CREST: [u8; 4] = [214, 236, 242, 255];
     const MAT: [u8; 4] = [238, 141, 176, 255];
     const MAT_EDGE: [u8; 4] = [250, 205, 222, 255];
+    const DEEP: [u8; 4] = [74, 110, 124, 255];
+    const DEEP_EDGE: [u8; 4] = [64, 98, 112, 255];
+    const PEG: [u8; 4] = [140, 105, 70, 255];
     let border = px == 0 || py == 0 || px == tile_px - 1 || py == tile_px - 1;
     match column {
         FLOOR_ATLAS_INDEX => {
@@ -635,6 +676,26 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
         }
         LOG_HORIZONTAL_ATLAS_INDEX => log_pixel(true, px, py, tile_px),
         LOG_VERTICAL_ATLAS_INDEX => log_pixel(false, px, py, tile_px),
+        DEEP_ATLAS_INDEX => {
+            // Still, darker water: no current, no chevron.
+            if border {
+                DEEP_EDGE
+            } else {
+                DEEP
+            }
+        }
+        SPOT_ATLAS_INDEX => {
+            // The floor with a peg: a plank spot.
+            if (px as i32 - tile_px as i32 / 2).abs() <= 2
+                && (py as i32 - tile_px as i32 / 2).abs() <= 2
+            {
+                PEG
+            } else if border {
+                FLOOR_EDGE
+            } else {
+                FLOOR
+            }
+        }
         _ => {
             if border {
                 MAT_EDGE

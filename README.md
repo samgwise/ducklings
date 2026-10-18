@@ -8,7 +8,9 @@ at junctions; step off the current and any of your line still trailing
 through the water washes away with it, parking where it lands until mum
 comes back for it. Fallen logs never guard the route home, but mum flies
 them alone — jump one with ducklings in tow and the whole trail stays
-behind.
+behind. Every third Meadow or Marsh level floods a deep channel: lay a
+limited stock of planks between the facing spots and the whole family
+waddles across once the bridge joins the banks.
 
 Three difficulties shape the ponds: **Pond** (gentle loops, fully lit),
 **Meadow** (the classic maze) and **Marsh** (dead ends and wits). The two
@@ -111,6 +113,8 @@ cargo run -p game --example gen_placeholder_audio
 | WASD / arrow keys | Walk that corridor — through its bends to the next decision point (a branch, dead end, log or water's edge) |
 | D-pad (Steam Deck / Xbox controllers) | Walk that corridor — through its bends to the next decision point |
 | Click / tap | Walk the corridor passing nearest the tap — through its bends to the next decision point (a branch, dead end, log or water's edge); a tap no corridor gets closer to is refused with a head shake |
+| Click / tap the water between two facing spots | Lay a plank across the gap (limited stock) |
+| Click / tap a laid plank | Pick it back up |
 | Press the direction at a log, or tap the tile across it | Confirm a log flight — any ducklings in tow stay behind |
 | Press the direction at water, or tap the water tile | Enter the current and ride |
 | Tap / click across the current while riding | Hop out at that junction |

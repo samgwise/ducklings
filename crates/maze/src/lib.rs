@@ -67,6 +67,11 @@ pub struct Maze {
     /// Per-cell bit mask of open passages a fallen log bars (symmetric:
     /// both ends of a logged passage carry the bit).
     logged: Vec<u8>,
+    /// Cells of still deep water: never rideable, never walkable — the
+    /// bridge levels' barrier.
+    deep: Vec<bool>,
+    /// Cells carrying a plank spot: the pegs a bridge is laid between.
+    spot: Vec<bool>,
 }
 
 impl Maze {
@@ -81,6 +86,8 @@ impl Maze {
             open: vec![0; (width * height) as usize],
             currents: vec![None; (width * height) as usize],
             logged: vec![0; (width * height) as usize],
+            deep: vec![false; (width * height) as usize],
+            spot: vec![false; (width * height) as usize],
         };
         if width == 0 || height == 0 {
             return maze;
@@ -171,6 +178,138 @@ impl Maze {
         best.map(|(maze, _)| maze).expect("at least one round ran")
     }
 
+    /// Generate a bridge-level maze: a braided maze, then a channel of
+    /// still deep water — three cells across — flooded along a random row
+    /// or column, splitting the maze into two banks. `island_count` dry
+    /// islands sit in the channel's middle line, each with spots facing
+    /// across the deep to bank spots north and south (the plank gaps),
+    /// plus one decoy island with a single spot. The intended chain —
+    /// bank → island → bank — bridges the banks with two planks per
+    /// island, and the constructor resalts until, with every gap planked,
+    /// every dry cell walk-connects to the start.
+    pub fn with_channel(width: u32, height: u32, seed: u64, braid: f32, island_count: u32) -> Self {
+        if width < 5 || height < 5 {
+            return Self::generate(width, height, seed, braid);
+        }
+        let mut salt = 0u64;
+        loop {
+            let mut maze = Maze::generate(width, height, seed ^ salt, braid);
+            maze.flood_channel(SmallRng::seed_from_u64(seed ^ salt ^ 0xC4A), island_count);
+            if maze.channel_connected() {
+                return maze;
+            }
+            salt += 1;
+        }
+    }
+
+    /// Flood the deep channel and lay its islands and spots: a full line
+    /// (row or column, random) of deep water three cells across, islands
+    /// spaced along the middle line, spots facing across one deep cell.
+    /// Returns false if the islands did not fit (the salt retry reuses a
+    /// fresh layout).
+    fn flood_channel(&mut self, mut rng: SmallRng, island_count: u32) -> bool {
+        let horizontal = rng.random::<f32>() < 0.5;
+        // The channel spans one axis fully and runs three cells across.
+        let span = if horizontal { self.width } else { self.height };
+        let cross = if horizontal { self.height } else { self.width };
+        // The channel needs two banks and three deep lines between them.
+        if cross < 5 {
+            return false;
+        }
+        let first = 1 + rng.random_range(0..cross - 4);
+        // The deep lines and the two banks.
+        for s in 0..span {
+            for t in 0..3 {
+                let cell = if horizontal {
+                    (s, first + t)
+                } else {
+                    (first + t, s)
+                };
+                let i = self.index(cell.0, cell.1);
+                self.deep[i] = true;
+            }
+        }
+        // Islands along the middle deep line, spaced apart; the last one
+        // is the decoy with a single spot.
+        let middle = first + 1;
+        let mut candidates: Vec<u32> = (0..span).collect();
+        for i in (1..candidates.len()).rev() {
+            let j = rng.random_range(0..=i);
+            candidates.swap(i, j);
+        }
+        let mut placed: Vec<u32> = Vec::new();
+        let wanted = island_count as usize + 1;
+        for &s in &candidates {
+            if placed.iter().all(|&p| p.abs_diff(s) >= 3) {
+                placed.push(s);
+                if placed.len() == wanted {
+                    break;
+                }
+            }
+        }
+        if placed.len() < wanted {
+            return false;
+        }
+        for (n, &s) in placed.iter().enumerate() {
+            let island = if horizontal {
+                (s, middle)
+            } else {
+                (middle, s)
+            };
+            let i = self.index(island.0, island.1);
+            self.deep[i] = false;
+            self.spot[i] = true;
+            // Chain islands (all but the last) face a bank spot either
+            // side; the decoy faces one way only.
+            let sides: &[i32] = if n + 1 == placed.len() {
+                &[1]
+            } else {
+                &[1, -1]
+            };
+            for &toward in sides {
+                let bank = if horizontal {
+                    (island.0, (island.1 as i32 + 2 * toward) as u32)
+                } else {
+                    ((island.0 as i32 + 2 * toward) as u32, island.1)
+                };
+                let b = self.index(bank.0, bank.1);
+                self.spot[b] = true;
+            }
+        }
+        true
+    }
+
+    /// Whether every dry cell walk-connects to the start once every gap
+    /// is planked — the bridge levels' gate.
+    fn channel_connected(&self) -> bool {
+        let mut visited = vec![false; (self.width * self.height) as usize];
+        if self.is_deep(0, 0) {
+            return false;
+        }
+        visited[self.index(0, 0)] = true;
+        let mut queue = VecDeque::new();
+        queue.push_back((0u32, 0u32));
+        let mut seen = 1;
+        while let Some((x, y)) = queue.pop_front() {
+            for dir in Direction::ALL {
+                if !self.is_open(x as i32, y as i32, dir) {
+                    continue;
+                }
+                let (nx, ny) = self
+                    .neighbour(x, y, dir)
+                    .expect("open passages are in bounds");
+                let walkable = !self.is_deep(nx, ny) || self.is_gap(nx, ny);
+                let i = self.index(nx, ny);
+                if walkable && !visited[i] {
+                    visited[i] = true;
+                    seen += 1;
+                    queue.push_back((nx, ny));
+                }
+            }
+        }
+        seen == self.width * self.height - self.deep.iter().filter(|&d| *d).count() as u32
+    }
+
     /// Maze width in cells.
     pub fn width(&self) -> u32 {
         self.width
@@ -246,11 +385,15 @@ impl Maze {
             / 2
     }
 
-    /// Cells with exactly one open passage.
+    /// Cells with exactly one open passage. Deep cells are never dead
+    /// ends — they are water, not corridors.
     pub fn dead_ends(&self) -> Vec<(u32, u32)> {
         let mut ends = Vec::new();
         for y in 0..self.height {
             for x in 0..self.width {
+                if self.is_deep(x, y) {
+                    continue;
+                }
                 if self.open[self.index(x, y)].count_ones() == 1 {
                     ends.push((x, y));
                 }
@@ -278,6 +421,10 @@ impl Maze {
                 let (nx, ny) = self
                     .neighbour(x, y, dir)
                     .expect("open passages are in bounds");
+                // Deep water walls the walk as surely as a hedge.
+                if self.is_deep(nx, ny) {
+                    continue;
+                }
                 if distances[self.index(nx, ny)].is_none() {
                     distances[self.index(nx, ny)] = Some(steps + 1);
                     queue.push_back((nx, ny));
@@ -285,6 +432,62 @@ impl Maze {
             }
         }
         distances
+    }
+
+    /// Whether the cell at `(x, y)` is still deep water: never rideable,
+    /// never walkable — the duck bumps it like a hedge.
+    pub fn is_deep(&self, x: u32, y: u32) -> bool {
+        self.has_cell(x, y) && self.deep[self.index(x, y)]
+    }
+
+    /// Whether the cell at `(x, y)` carries a plank spot.
+    pub fn is_spot(&self, x: u32, y: u32) -> bool {
+        self.has_cell(x, y) && self.spot[self.index(x, y)]
+    }
+
+    /// Whether the deep cell at `(x, y)` is a plank gap: two spots face
+    /// each other across it.
+    pub fn is_gap(&self, x: u32, y: u32) -> bool {
+        self.is_deep(x, y)
+            && (self.is_spot(x, y.wrapping_sub(1)) && self.is_spot(x, y + 1)
+                || self.is_spot(x.wrapping_sub(1), y) && self.is_spot(x + 1, y))
+    }
+
+    /// How many plank gaps face this dry island cell — two for a chain
+    /// island (bank either side), one for the decoy.
+    pub fn gap_sides(&self, x: u32, y: u32) -> u32 {
+        if self.is_deep(x, y) {
+            return 0;
+        }
+        Direction::ALL
+            .into_iter()
+            .filter(|&dir| {
+                let (nx, ny) = match self.neighbour(x, y, dir) {
+                    Some(cell) => cell,
+                    None => return false,
+                };
+                self.is_gap(nx, ny)
+            })
+            .count() as u32
+    }
+
+    /// The channel's island cells: dry cells embedded in the deep water,
+    /// with deep on both sides of one axis.
+    pub fn islands(&self) -> Vec<(u32, u32)> {
+        let mut islands = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.is_deep(x, y) {
+                    continue;
+                }
+                let deep_ns = self.is_deep(x, y + 1) && self.is_deep(x, y.wrapping_sub(1));
+                let deep_ew = self.is_deep(x.wrapping_sub(1), y) && self.is_deep(x + 1, y);
+                if self.is_spot(x, y) && (deep_ns || deep_ew) {
+                    islands.push((x, y));
+                }
+            }
+        }
+        islands
     }
 
     /// Whether a cell exists at `(x, y)`.
@@ -516,7 +719,7 @@ impl Maze {
         let mut edges = Vec::new();
         for y in 0..self.height {
             for x in 0..self.width {
-                if self.flow_at(x, y).is_some() {
+                if self.flow_at(x, y).is_some() || self.is_deep(x, y) {
                     continue;
                 }
                 let from = self.index(x, y);
@@ -529,9 +732,9 @@ impl Maze {
                     let (nx, ny) = self
                         .neighbour(x, y, dir)
                         .expect("an open passage is in bounds");
-                    if self.flow_at(nx, ny).is_none() {
+                    if self.flow_at(nx, ny).is_none() && !self.is_deep(nx, ny) {
                         edges.push((from, self.index(nx, ny)));
-                    } else {
+                    } else if self.flow_at(nx, ny).is_some() {
                         let flow = self.flow_at(nx, ny).expect("a stream cell flows");
                         let mut cur = (nx, ny);
                         loop {
@@ -575,7 +778,7 @@ impl Maze {
     /// there, so it is no escape). A one-way stream must never seal a
     /// pocket the clutch can't leave.
     fn dry_strongly_connected_from(&self, start: (u32, u32)) -> bool {
-        if self.flow_at(start.0, start.1).is_some() {
+        if self.flow_at(start.0, start.1).is_some() || self.is_deep(start.0, start.1) {
             return false;
         }
         let dry_count = self.currents.iter().filter(|c| c.is_none()).count();
@@ -813,8 +1016,11 @@ mod tests {
             let (nx, ny) = maze
                 .neighbour(from.0, from.1, dir)
                 .expect("an open passage is in bounds");
-            if maze.flow_at(nx, ny).is_none() {
+            if maze.flow_at(nx, ny).is_none() && !maze.is_deep(nx, ny) {
                 out.push(maze.index(nx, ny));
+                continue;
+            }
+            if maze.is_deep(nx, ny) {
                 continue;
             }
             let mut cur = (nx, ny);
@@ -910,6 +1116,8 @@ mod tests {
             open: vec![0; (width * height) as usize],
             currents: vec![None; (width * height) as usize],
             logged: vec![0; (width * height) as usize],
+            deep: vec![false; (width * height) as usize],
+            spot: vec![false; (width * height) as usize],
         };
         for &(x, y, dir) in open {
             maze.carve(x, y, dir);
@@ -977,6 +1185,35 @@ mod tests {
             hand_maze(5, 5, &open, currents).dry_strongly_connected_from((0, 0)),
             "with a walk home the island is a fine place for a duckling"
         );
+    }
+
+    #[test]
+    fn the_channel_splits_the_maze_with_islands_and_spots() {
+        for seed in 0..10u64 {
+            let maze = Maze::with_channel(9, 7, seed, 0.3, 1);
+            assert_eq!(maze, Maze::with_channel(9, 7, seed, 0.3, 1));
+            // Two full deep lines cross the maze; the middle line is deep
+            // everywhere but the islands punched into it.
+            let full_lines = (0..maze.height())
+                .filter(|&y| (0..maze.width()).all(|x| maze.is_deep(x, y)))
+                .count()
+                + (0..maze.width())
+                    .filter(|&x| (0..maze.height()).all(|y| maze.is_deep(x, y)))
+                    .count();
+            assert_eq!(full_lines, 2, "the channel is three cells across");
+            // The asked island plus the decoy.
+            assert_eq!(maze.islands().len(), 2);
+            // The chain island faces two gaps, the decoy one.
+            assert_eq!(
+                maze.islands()
+                    .iter()
+                    .filter(|&&(x, y)| maze.gap_sides(x, y) == 2)
+                    .count(),
+                1
+            );
+            // The gate: with every gap planked, all dry cells connect.
+            assert!(maze.channel_connected());
+        }
     }
 
     #[test]

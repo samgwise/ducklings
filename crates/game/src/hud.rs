@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 
+use crate::bridge::PlankStock;
 use crate::ducklings::Clutch;
 use crate::level::{GamePhase, LevelIndex};
 
@@ -45,16 +46,24 @@ fn show_label(mut label: Single<&mut Visibility, With<LevelLabel>>) {
     label.set_if_neq(Visibility::Visible);
 }
 
-/// Keep the label honest: level index (one-based on screen) and the clutch.
+/// Keep the label honest: level index (one-based on screen), the clutch,
+/// and — on bridge levels — the plank stock.
 fn update_label(
     level: Res<LevelIndex>,
     clutch: Res<Clutch>,
+    stock: Res<PlankStock>,
     mut label: Single<&mut Text, With<LevelLabel>>,
 ) {
+    let planks = if stock.total > 0 {
+        format!("   Planks {}/{}", stock.left, stock.total)
+    } else {
+        String::new()
+    };
     label.0 = format!(
-        "Level {}   Clutch {}/{}",
+        "Level {}   Clutch {}/{}{}",
         level.0 + 1,
         clutch.collected,
-        clutch.total
+        clutch.total,
+        planks
     );
 }

@@ -76,6 +76,17 @@ clutch in tow.
   `FOG_REVEAL_RADIUS` corridor steps through open passages — hedges block
   it, streams carry it — lighting what it touches, and every cell seen
   once stays dimly remembered. Pond plays fully lit.
+- Bridges. Every third Meadow and Marsh level floods a channel of still
+  deep water — three cells across, never rideable, walked into like a
+  hedge — splitting the maze into two banks, with a chain island or two
+  holding ducklings in the middle and a decoy island with a single spot.
+  Spots face each other across one deep cell; the player lays a limited
+  plank stock by clicking the water between a facing pair (the plank
+  makes the deep cell walkable), and picks planks back up the same way.
+  A press toward a gap from its bank lays too. The tight budget equals
+  two planks per chain island, so the right pairs must be found; once
+  the whole clutch is gathered and a plank chain reaches the exit's
+  side, the family waddles across and completes the level.
 - Exit cues. Once the exit tile is revealed — always on the pond; on the
   fogged levels once seen — an arrow rides the viewport edge inset by a
   margin, pointing along the camera→exit ray whenever the mat lies
@@ -129,6 +140,9 @@ input that opened a screen cannot also dismiss it.
   inset from the viewport edge and its radius. The mat outline's beat is
   `PULSE_PERIOD_SECS = 1.1`, rim `OUTLINE_GROWTH = 0.3` of a tile, alpha
   sweeping `PULSE_MIN_ALPHA = 0.15` to `PULSE_MAX_ALPHA = 0.95`.
+- Bridges: the channel is `CHANNEL_DEPTH = 3` cells across, with one
+  chain island per bridge level on Meadow and two on Marsh (plus one
+  decoy); the plank budget is two per chain island.
 - `TITLE_TILE_SIZE = 20.0` — the lettering map's tile size (gameplay is
   `TILE_SIZE = 40.0`).
 

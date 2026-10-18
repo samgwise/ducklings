@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use maze::{Direction, Maze};
 
 use crate::audio::SfxEvent;
+use crate::bridge::{self, PlankStock, Planked};
 use crate::ducklings::{Clutch, TrailStranded};
 use crate::level::GamePhase;
 use crate::world::{MainCamera, MazeRes, TILE_SIZE, cell_world_pos};
@@ -147,13 +148,16 @@ fn pad_direction(pads: &Query<&Gamepad>) -> Option<Direction> {
 
 /// Drive hops: advance the lerp, land (committing the cell and trail), then
 /// start the next hop from the buffer — all in the frame the last one ends.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn hop(
     time: Res<Time>,
     maze_res: Res<MazeRes>,
     clutch: Res<Clutch>,
     mut sfx: MessageWriter<SfxEvent>,
     mut strand_trail: MessageWriter<TrailStranded>,
+    mut planked: ResMut<Planked>,
+    mut stock: ResMut<PlankStock>,
+    plank_meshes: Option<Res<bridge::PlankMesh>>,
     mut commands: Commands,
     mover: Single<
         (
@@ -208,10 +212,32 @@ fn hop(
     let manual = buffered.0.take().inspect(|_| plan.queue.clear());
     let (dir, duration) = match (manual, flow) {
         // On dry land a press walks its corridor — through bends to the
-        // next decision point, like a tap. A blocked first step leaves an
-        // empty plan and the hop below bumps.
+        // next decision point, like a tap. A press toward a gap lays a
+        // plank instead: the deep water cannot be walked or ridden, so
+        // the press has one sensible effect. A blocked first step leaves
+        // an empty plan and the hop below bumps.
         (Some(dir), None) => {
-            plan.queue = corridor_walk(&maze_res.maze, duck.cell, dir)
+            let (gdx, gdy) = dir.delta();
+            let gap = (
+                (duck.cell.0 as i32 + gdx) as u32,
+                (duck.cell.1 as i32 + gdy) as u32,
+            );
+            if maze_res.maze.is_gap(gap.0, gap.1)
+                && !planked.0.contains(&gap)
+                && stock.left > 0
+                && let Some(meshes) = plank_meshes.as_ref()
+            {
+                bridge::lay(
+                    &mut commands,
+                    &mut planked,
+                    &mut stock,
+                    meshes,
+                    (maze_res.maze.width(), maze_res.maze.height()),
+                    gap,
+                );
+                return;
+            }
+            plan.queue = corridor_walk(&maze_res.maze, &planked, duck.cell, dir)
                 .unwrap_or_default()
                 .into();
             (plan.queue.pop_front().unwrap_or(dir), HOP_SECS)
@@ -256,7 +282,11 @@ fn hop(
         }
     };
     let (x, y) = duck.cell;
-    if !maze_res.maze.is_open(x as i32, y as i32, dir) {
+    let (dx, dy) = dir.delta();
+    let to_cell = ((x as i32 + dx) as u32, (y as i32 + dy) as u32);
+    if !maze_res.maze.is_open(x as i32, y as i32, dir)
+        || (maze_res.maze.is_deep(to_cell.0, to_cell.1) && !planked.0.contains(&to_cell))
+    {
         // A bump clears the buffer so a held key never machine-guns thuds.
         sfx.write(SfxEvent::Bump);
         return;
@@ -271,8 +301,6 @@ fn hop(
             strand_trail.write(TrailStranded);
         }
     }
-    let (dx, dy) = dir.delta();
-    let to_cell = ((x as i32 + dx) as u32, (y as i32 + dy) as u32);
     let cells = (maze_res.maze.width(), maze_res.maze.height());
     duck.facing = facing_angle(dir);
     transform.rotation = Quat::from_rotation_z(duck.facing);
@@ -320,6 +348,7 @@ fn pointer_walk(
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     maze_res: Res<MazeRes>,
+    planked: Res<Planked>,
     target: Single<(Entity, &Duck, &mut WalkPlan)>,
 ) {
     let point = if clicks.just_pressed(MouseButton::Left) {
@@ -339,7 +368,7 @@ fn pointer_walk(
     let cells = (maze_res.maze.width(), maze_res.maze.height());
     let cell = world_to_cell(cells, world);
     let (duck_entity, duck, mut plan) = target.into_inner();
-    let steps = walk_plan(&maze_res.maze, duck.cell, cell);
+    let steps = walk_plan(&maze_res.maze, &planked, duck.cell, cell);
     if steps.is_empty() && cell != duck.cell {
         // No corridor ends any closer to the tap: refuse on the spot.
         sfx.write(SfxEvent::Bump);
@@ -372,7 +401,7 @@ fn head_shake(
 
 /// The maze cell under a world point — hedges snap to their nearest cell,
 /// and clicks beyond the maze clamp inside it.
-fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
+pub fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
     // The tile grid is (2w+1) wide, so tile index from world is
     // `x / TILE + w`; cell (x, y) occupies tile (2x + 1, 2y + 1).
     let tile_x = (world.x / TILE_SIZE + cells.0 as f32).round() as i32;
@@ -391,7 +420,12 @@ fn world_to_cell(cells: (u32, u32), world: Vec2) -> (u32, u32) {
 /// corridor passing closer — across a hedge, say — plans nothing and is
 /// refused, and queued walks never fly logs or enter the water: those
 /// special moves take a deliberate ask.
-fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction> {
+fn walk_plan(
+    maze: &Maze,
+    planked: &Planked,
+    from: (u32, u32),
+    target: (u32, u32),
+) -> Vec<Direction> {
     if from == target {
         // A tap on the duck herself plans nothing.
         return Vec::new();
@@ -411,7 +445,7 @@ fn walk_plan(maze: &Maze, from: (u32, u32), target: (u32, u32)) -> Vec<Direction
     let here = manhattan(from, target);
     let mut best: Option<(u32, Vec<Direction>)> = None;
     for dir in Direction::ALL {
-        let Some(plan) = corridor_walk(maze, from, dir) else {
+        let Some(plan) = corridor_walk(maze, planked, from, dir) else {
             continue;
         };
         // The corridor hit box: a walk qualifies when it passes closer to
@@ -482,15 +516,23 @@ fn walk_end(from: (u32, u32), plan: &[Direction]) -> (u32, u32) {
 /// choice of ways, or a dead end. A queued walk never flies a log or steps
 /// into the current: those need a deliberate move, so the walk ends at the
 /// log and the water's edge.
-fn corridor_walk(maze: &Maze, from: (u32, u32), mut dir: Direction) -> Option<Vec<Direction>> {
+fn corridor_walk(
+    maze: &Maze,
+    planked: &Planked,
+    from: (u32, u32),
+    mut dir: Direction,
+) -> Option<Vec<Direction>> {
     if !maze.is_open(from.0 as i32, from.1 as i32, dir)
         || maze.is_logged(from.0 as i32, from.1 as i32, dir)
+        || maze.is_deep(from.0, from.1)
     {
         return None;
     }
     let (fx, fy) = dir.delta();
     let first = ((from.0 as i32 + fx) as u32, (from.1 as i32 + fy) as u32);
-    if maze.flow_at(first.0, first.1).is_some() {
+    if maze.flow_at(first.0, first.1).is_some()
+        || (maze.is_deep(first.0, first.1) && !planked.0.contains(&first))
+    {
         return None;
     }
     let mut plan = Vec::new();
@@ -502,7 +544,9 @@ fn corridor_walk(maze: &Maze, from: (u32, u32), mut dir: Direction) -> Option<Ve
         }
         let (dx, dy) = dir.delta();
         let next = ((x + dx) as u32, (y + dy) as u32);
-        if maze.flow_at(next.0, next.1).is_some() {
+        if maze.flow_at(next.0, next.1).is_some()
+            || (maze.is_deep(next.0, next.1) && !planked.0.contains(&next))
+        {
             break;
         }
         x += dx;
@@ -541,13 +585,14 @@ mod tests {
         // first decision point — a branch with a choice of ways, or a dead
         // end — never mid-corridor, and never revisiting a cell.
         let maze = Maze::generate(7, 7, 7, 0.0);
+        let planked = Planked::default();
         for y in 0..7u32 {
             for x in 0..7u32 {
                 let from = (2u32, 2u32);
                 if (x, y) == from {
                     continue;
                 }
-                let plan = walk_plan(&maze, from, (x, y));
+                let plan = walk_plan(&maze, &planked, from, (x, y));
                 // A tap that gets no closer is refused; the rest walks.
                 if plan.is_empty() {
                     continue;
@@ -588,17 +633,18 @@ mod tests {
         // corridor that leads to it, not whichever axis happened to lead.
         for seed in 0..10u64 {
             let maze = Maze::generate(9, 7, seed, 0.3);
+            let planked = Planked::default();
             let from = ((seed % 7) as u32, ((seed / 2) % 5) as u32);
             let target = ((from.0 + 3).min(8), (from.1 + 2).min(6));
             if from == target {
                 continue;
             }
-            let plan = walk_plan(&maze, from, target);
+            let plan = walk_plan(&maze, &planked, from, target);
             let here = manhattan(from, target);
             if plan.is_empty() {
                 // Refused: no corridor passes any closer than she already is.
                 for dir in Direction::ALL {
-                    if let Some(alternative) = corridor_walk(&maze, from, dir) {
+                    if let Some(alternative) = corridor_walk(&maze, &planked, from, dir) {
                         assert!(
                             closest_approach(from, &alternative, target) >= here,
                             "a refused tap has no closer-passing corridor"
@@ -615,7 +661,7 @@ mod tests {
             // …and ends nearer than any other qualifying corridor's.
             let best = manhattan(walk_end(from, &plan), target);
             for dir in Direction::ALL {
-                if let Some(alternative) = corridor_walk(&maze, from, dir) {
+                if let Some(alternative) = corridor_walk(&maze, &planked, from, dir) {
                     if closest_approach(from, &alternative, target) < here {
                         assert!(
                             best <= manhattan(walk_end(from, &alternative), target),
@@ -634,10 +680,11 @@ mod tests {
         // walks that corridor.
         for seed in 0..10u64 {
             let maze = Maze::generate(9, 7, seed, 0.8);
+            let planked = Planked::default();
             for y in 0..maze.height() {
                 for x in 0..maze.width() {
                     for dir in Direction::ALL {
-                        let Some(walk) = corridor_walk(&maze, (x, y), dir) else {
+                        let Some(walk) = corridor_walk(&maze, &planked, (x, y), dir) else {
                             continue;
                         };
                         let (mut cx, mut cy) = (x as i32, y as i32);
@@ -645,7 +692,7 @@ mod tests {
                             let (dx, dy) = step.delta();
                             cx += dx;
                             cy += dy;
-                            let plan = walk_plan(&maze, (x, y), (cx as u32, cy as u32));
+                            let plan = walk_plan(&maze, &planked, (x, y), (cx as u32, cy as u32));
                             assert!(
                                 !plan.is_empty(),
                                 "a tap at {cx},{cy} from {x},{y} walks a corridor"
@@ -665,12 +712,14 @@ mod tests {
         // a cell.
         for seed in 0..10u64 {
             let maze = Maze::generate(9, 7, seed, 0.3);
-            for y in 0..maze.height() {
-                for x in 0..maze.width() {
-                    for dir in Direction::ALL {
-                        let Some(plan) = corridor_walk(&maze, (x, y), dir) else {
-                            continue;
-                        };
+                for y in 0..maze.height() {
+                    for x in 0..maze.width() {
+                        for dir in Direction::ALL {
+                            let Some(plan) =
+                                corridor_walk(&maze, &Planked::default(), (x, y), dir)
+                            else {
+                                continue;
+                            };
                         assert_eq!(plan[0], dir, "the walk leads the pressed way");
                         let (mut cx, mut cy) = (x as i32, y as i32);
                         let mut visited = vec![(x, y)];
@@ -721,9 +770,10 @@ mod tests {
         // plan stops before revisiting a cell. Heavy braiding makes rings.
         for seed in 0..30u64 {
             let maze = Maze::generate(9, 7, seed, 0.8);
+            let planked = Planked::default();
             for y in 0..maze.height() {
                 for x in 0..maze.width() {
-                    let plan = walk_plan(&maze, (x, y), (0, 0));
+                    let plan = walk_plan(&maze, &planked, (x, y), (0, 0));
                     let (mut cx, mut cy) = (x as i32, y as i32);
                     let mut visited = vec![(x, y)];
                     for step in &plan {
@@ -761,7 +811,7 @@ mod tests {
     #[test]
     fn clicking_the_duck_plans_nothing() {
         let maze = Maze::generate(5, 5, 1, 0.0);
-        assert!(walk_plan(&maze, (2, 2), (2, 2)).is_empty());
+        assert!(walk_plan(&maze, &Planked::default(), (2, 2), (2, 2)).is_empty());
     }
 
     #[test]
@@ -773,7 +823,7 @@ mod tests {
             let Some((from, dir)) = logged_passage(&maze) else {
                 continue;
             };
-            assert!(corridor_walk(&maze, from, dir).is_none());
+            assert!(corridor_walk(&maze, &Planked::default(), from, dir).is_none());
             return;
         }
         panic!("no seed in 0..20 laid a log to stop before");
@@ -785,10 +835,11 @@ mod tests {
         // the water — those moves are confirmations, never automatic.
         for seed in 0..10u64 {
             let maze = Maze::with_obstacles(9, 7, seed, 0.3, 2, 2);
+            let planked = Planked::default();
             for y in 0..maze.height() {
                 for x in 0..maze.width() {
                     for dir in Direction::ALL {
-                        let Some(plan) = corridor_walk(&maze, (x, y), dir) else {
+                        let Some(plan) = corridor_walk(&maze, &planked, (x, y), dir) else {
                             continue;
                         };
                         let (mut cx, mut cy) = (x as i32, y as i32);
@@ -822,13 +873,13 @@ mod tests {
             let across = ((from.0 as i32 + dx) as u32, (from.1 as i32 + dy) as u32);
             let beyond = ((across.0 as i32 + dx) as u32, (across.1 as i32 + dy) as u32);
             assert_eq!(
-                walk_plan(&maze, from, across),
+                walk_plan(&maze, &Planked::default(), from, across),
                 vec![dir],
                 "the tap on the far tile confirms the flight"
             );
             // A tap past the log either stops short or takes another
             // corridor — never the logged step.
-            let plan = walk_plan(&maze, from, beyond);
+            let plan = walk_plan(&maze, &Planked::default(), from, beyond);
             let (mut px, mut py) = (from.0 as i32, from.1 as i32);
             for step in &plan {
                 assert!(!maze.is_logged(px, py, *step));
@@ -860,7 +911,7 @@ mod tests {
                 continue;
             };
             assert_eq!(
-                walk_plan(&maze, bank, water_cell),
+                walk_plan(&maze, &Planked::default(), bank, water_cell),
                 vec![dir],
                 "the tap on the water confirms the ride"
             );

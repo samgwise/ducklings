@@ -20,6 +20,11 @@ pub struct LevelPlan {
     pub logs: u32,
     /// Whether the maze sleeps under fog of war until mum explores it.
     pub fog: bool,
+    /// Whether this level bridges a deep channel: the player lays a
+    /// limited stock of planks between facing spots.
+    pub bridge: bool,
+    /// How many chain islands the channel carries (bridge levels only).
+    pub islands: u32,
 }
 
 /// The three maze difficulties, chosen on the title screen.
@@ -41,23 +46,33 @@ pub fn level_plan(index: u32, difficulty: Difficulty) -> LevelPlan {
         Difficulty::Meadow => (7, 5, 2, 0.2, true),
         Difficulty::Marsh => (9, 7, 3, 0.05, true),
     };
+    // Every third Meadow and Marsh level bridges a deep channel.
+    let bridge = fog && index % 3 == 2;
+    let islands = if bridge && difficulty == Difficulty::Marsh {
+        2
+    } else {
+        1
+    };
     LevelPlan {
         width: (base_w + 2 * index).min(25),
         height: (base_h + index).min(17),
         ducklings: (base_ducklings + index as usize).min(12),
         braid,
         fog,
-        // The first pond is dry; streams trickle in from the second, and
+        bridge,
+        islands,
+        // Bridge levels flood the channel instead of streaming; the
+        // first pond is dry, streams trickle in from the second, and
         // fallen logs from the third.
-        streams: if index >= 1 {
+        streams: if bridge || index < 1 {
+            0
+        } else {
             (1 + index / 3).min(4)
-        } else {
-            0
         },
-        logs: if index >= 2 {
-            (1 + (index - 2) / 4).min(3)
-        } else {
+        logs: if bridge || index < 2 {
             0
+        } else {
+            (1 + (index - 2) / 4).min(3)
         },
     }
 }
@@ -198,14 +213,31 @@ mod tests {
 
     #[test]
     fn logs_arrive_after_the_streams() {
-        // The first two ponds are log-free; a log lands on the third and
-        // one more joins every fourth level after, capped at three.
+        // The first two ponds are log-free; a log lands on the fourth (the
+        // third bridges the channel) and one more joins every fourth level
+        // after, capped at three.
         assert_eq!(level_plan(0, Difficulty::Meadow).logs, 0);
         assert_eq!(level_plan(1, Difficulty::Meadow).logs, 0);
-        assert_eq!(level_plan(2, Difficulty::Meadow).logs, 1);
+        assert_eq!(level_plan(2, Difficulty::Meadow).logs, 0); // bridges carry none
+        assert_eq!(level_plan(3, Difficulty::Meadow).logs, 1);
         assert_eq!(level_plan(6, Difficulty::Meadow).logs, 2);
         assert_eq!(level_plan(10, Difficulty::Meadow).logs, 3);
-        assert_eq!(level_plan(50, Difficulty::Meadow).logs, 3);
+        assert_eq!(level_plan(49, Difficulty::Meadow).logs, 3);
+        assert_eq!(level_plan(50, Difficulty::Meadow).logs, 0); // a bridge level
+    }
+
+    #[test]
+    fn bridge_levels_arrive_every_third() {
+        // Every third Meadow and Marsh level floods a channel; the pond
+        // never does.
+        assert!(!level_plan(0, Difficulty::Meadow).bridge);
+        assert!(!level_plan(1, Difficulty::Meadow).bridge);
+        assert!(level_plan(2, Difficulty::Meadow).bridge);
+        assert!(!level_plan(3, Difficulty::Meadow).bridge);
+        assert!(level_plan(5, Difficulty::Marsh).bridge);
+        assert!(!level_plan(2, Difficulty::Pond).bridge);
+        assert_eq!(level_plan(2, Difficulty::Meadow).islands, 1);
+        assert_eq!(level_plan(5, Difficulty::Marsh).islands, 2);
     }
 
     #[test]
