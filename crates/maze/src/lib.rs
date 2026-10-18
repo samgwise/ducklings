@@ -506,11 +506,13 @@ impl Maze {
     }
 
     /// The movement graph over dry cells: walking edges both ways (a
-    /// fallen log bars the walk — the clutch cannot cross it), plus
-    /// one-way ride edges — from a dry cell beside a stream, entering the
-    /// current sweeps you downstream past each run cell (hop-out points
-    /// at every side branch you pass) until the let-off.
-    fn dry_edges(&self) -> Vec<(usize, usize)> {
+    /// fallen log bars the walk — the clutch cannot cross it), plus one-way
+    /// ride edges — from a dry cell beside a stream, entering the current
+    /// sweeps you downstream to the run's let-off. With `hop_outs`, the
+    /// ride also lands on every open side branch passed — mum may hop out
+    /// mid-ride, but the clutch cannot: riding, they hold in her wake, and
+    /// the moment she steps off they wash to the let-off.
+    fn dry_edges(&self, hop_outs: bool) -> Vec<(usize, usize)> {
         let mut edges = Vec::new();
         for y in 0..self.height {
             for x in 0..self.width {
@@ -533,18 +535,20 @@ impl Maze {
                         let flow = self.flow_at(nx, ny).expect("a stream cell flows");
                         let mut cur = (nx, ny);
                         loop {
-                            for side in Direction::ALL {
-                                if side == flow || side == flow.opposite() {
-                                    continue; // downstream is the current's job; upstream fights it
-                                }
-                                if !self.is_open(cur.0 as i32, cur.1 as i32, side) {
-                                    continue;
-                                }
-                                let (sx, sy) = self
-                                    .neighbour(cur.0, cur.1, side)
-                                    .expect("a side branch is in bounds");
-                                if self.flow_at(sx, sy).is_none() {
-                                    edges.push((from, self.index(sx, sy)));
+                            if hop_outs {
+                                for side in Direction::ALL {
+                                    if side == flow || side == flow.opposite() {
+                                        continue; // downstream is the current's job; upstream fights it
+                                    }
+                                    if !self.is_open(cur.0 as i32, cur.1 as i32, side) {
+                                        continue;
+                                    }
+                                    let (sx, sy) = self
+                                        .neighbour(cur.0, cur.1, side)
+                                        .expect("a side branch is in bounds");
+                                    if self.flow_at(sx, sy).is_none() {
+                                        edges.push((from, self.index(sx, sy)));
+                                    }
                                 }
                             }
                             let (dx, dy) = flow.delta();
@@ -564,21 +568,28 @@ impl Maze {
         edges
     }
 
-    /// Whether the dry cells are strongly connected from `start`: every
-    /// dry cell reachable from the start, and the start reachable from
-    /// every dry cell (reachability in the graph and in its reverse).
-    /// A one-way stream must never seal a pocket the duck can't leave.
+    /// Whether the level is solvable for the whole clutch from `start`:
+    /// every dry cell reachable by mum — her rides may hop out at side
+    /// branches — and the clutch able to get home from every dry cell,
+    /// riding only to a run's let-off (a mid-ride hop-out strands them
+    /// there, so it is no escape). A one-way stream must never seal a
+    /// pocket the clutch can't leave.
     fn dry_strongly_connected_from(&self, start: (u32, u32)) -> bool {
         if self.flow_at(start.0, start.1).is_some() {
             return false;
         }
-        let edges = self.dry_edges();
-        let reversed: Vec<(usize, usize)> = edges.iter().map(|&(a, b)| (b, a)).collect();
         let dry_count = self.currents.iter().filter(|c| c.is_none()).count();
         let start = self.index(start.0, start.1);
         let node_count = self.currents.len();
-        Self::reaches(&edges, start, node_count, dry_count)
-            && Self::reaches(&reversed, start, node_count, dry_count)
+        let mum = self.dry_edges(true);
+        let clutch = self.dry_edges(false);
+        Self::reaches(&mum, start, node_count, dry_count)
+            && Self::reaches(
+                &clutch.iter().map(|&(a, b)| (b, a)).collect::<Vec<_>>(),
+                start,
+                node_count,
+                dry_count,
+            )
     }
 
     /// Whether a BFS over `edges` from `start` visits `must_visit` nodes.
@@ -785,12 +796,13 @@ mod tests {
         }
     }
 
-    /// Game-exact dry-cell successors from `from` (clutch-conservative:
-    /// logs bar everything): walk to a dry neighbour, or enter water and
-    /// ride — hop by hop along the current, hop-out at every open side
-    /// branch, chaining onto differently-flowing water, depositing on the
-    /// first dry cell — exactly as the game's `hop` system behaves.
-    fn dry_successors(maze: &Maze, from: (u32, u32)) -> Vec<usize> {
+    /// Game-exact dry-cell successors from `from`: walk to a dry
+    /// neighbour, or enter water and ride — hop by hop along the current,
+    /// depositing on the first dry cell. With `hop_outs`, the ride also
+    /// lands on every open side branch passed (mum's prerogative); without,
+    /// it ends at the let-off (the clutch's rule: riding, they hold in her
+    /// wake, and the moment she steps off they wash to the let-off).
+    fn dry_successors(maze: &Maze, from: (u32, u32), hop_outs: bool) -> Vec<usize> {
         let mut out = Vec::new();
         for dir in Direction::ALL {
             if !maze.is_open(from.0 as i32, from.1 as i32, dir)
@@ -810,20 +822,22 @@ mod tests {
                 let flow = maze
                     .flow_at(cur.0, cur.1)
                     .expect("a ride starts on a stream cell");
-                for side in Direction::ALL {
-                    if side == flow || side == flow.opposite() {
-                        continue;
-                    }
-                    if !maze.is_open(cur.0 as i32, cur.1 as i32, side)
-                        || maze.is_logged(cur.0 as i32, cur.1 as i32, side)
-                    {
-                        continue;
-                    }
-                    let (sx, sy) = maze
-                        .neighbour(cur.0, cur.1, side)
-                        .expect("an open passage is in bounds");
-                    if maze.flow_at(sx, sy).is_none() {
-                        out.push(maze.index(sx, sy));
+                if hop_outs {
+                    for side in Direction::ALL {
+                        if side == flow || side == flow.opposite() {
+                            continue;
+                        }
+                        if !maze.is_open(cur.0 as i32, cur.1 as i32, side)
+                            || maze.is_logged(cur.0 as i32, cur.1 as i32, side)
+                        {
+                            continue;
+                        }
+                        let (sx, sy) = maze
+                            .neighbour(cur.0, cur.1, side)
+                            .expect("an open passage is in bounds");
+                        if maze.flow_at(sx, sy).is_none() {
+                            out.push(maze.index(sx, sy));
+                        }
                     }
                 }
                 let (dx, dy) = flow.delta();
@@ -841,40 +855,128 @@ mod tests {
 
     #[test]
     fn the_clutch_can_always_get_home() {
-        // Game-exact reachability over generated levels: from (0, 0) every
-        // dry cell is reachable AND every dry cell can get back — rides
-        // deposit on dry ground, logs bar the clutch, side hops exit a
-        // ride. A failure here is a playable trap like the play-test one.
+        // Game-exact reachability over generated levels: mum — whose rides
+        // may hop out at side branches — reaches every dry cell, and the
+        // clutch — whose rides end at the let-off, a mid-ride hop-out
+        // stranding them there — gets home from every dry cell. A failure
+        // here is a playable trap like the play-test one.
         for seed in 0..100u64 {
             for &(w, h, braid) in &[(13u32, 11u32, 0.2), (25, 17, 0.05), (9, 7, 0.4)] {
                 let maze = Maze::with_obstacles(w, h, seed, braid, 4, 3);
                 let dry_count = (0..(maze.height() * maze.width()) as usize)
                     .filter(|&i| maze.currents[i].is_none())
                     .count();
-                let edges: Vec<(usize, usize)> = (0..maze.height())
-                    .flat_map(|y| (0..maze.width()).map(move |x| (x, y)))
-                    .filter(|&(x, y)| maze.flow_at(x, y).is_none())
-                    .flat_map(|from| {
-                        dry_successors(&maze, from)
-                            .into_iter()
-                            .map(|to| (maze.index(from.0, from.1), to))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
+                let edges = |hop_outs: bool| {
+                    (0..maze.height())
+                        .flat_map(|y| (0..maze.width()).map(move |x| (x, y)))
+                        .filter(|&(x, y)| maze.flow_at(x, y).is_none())
+                        .flat_map(|from| {
+                            dry_successors(&maze, from, hop_outs)
+                                .into_iter()
+                                .map(|to| (maze.index(from.0, from.1), to))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>()
+                };
                 let nodes = maze.currents.len();
                 let start = maze.index(0, 0);
+                let mum = edges(true);
+                let clutch = edges(false);
                 assert!(
-                    Maze::reaches(&edges, start, nodes, dry_count)
+                    Maze::reaches(&mum, start, nodes, dry_count)
                         && Maze::reaches(
-                            &edges.iter().map(|&(a, b)| (b, a)).collect::<Vec<_>>(),
+                            &clutch.iter().map(|&(a, b)| (b, a)).collect::<Vec<_>>(),
                             start,
                             nodes,
                             dry_count
                         ),
-                    "every dry cell reachable both ways at {w}x{h} braid {braid} seed {seed}"
+                    "the clutch gets home from every dry cell at {w}x{h} braid {braid} seed {seed}"
                 );
             }
         }
+    }
+
+    /// A hand-built maze for the gate tests: `open` lists (x, y, dir)
+    /// passages (carved symmetrically), `currents` the stream cells.
+    fn hand_maze(
+        width: u32,
+        height: u32,
+        open: &[(u32, u32, Direction)],
+        currents: &[(u32, u32, Direction)],
+    ) -> Maze {
+        let mut maze = Maze {
+            width,
+            height,
+            open: vec![0; (width * height) as usize],
+            currents: vec![None; (width * height) as usize],
+            logged: vec![0; (width * height) as usize],
+        };
+        for &(x, y, dir) in open {
+            maze.carve(x, y, dir);
+        }
+        for &(x, y, dir) in currents {
+            let i = maze.index(x, y);
+            maze.currents[i] = Some(dir);
+        }
+        maze
+    }
+
+    #[test]
+    fn a_ride_in_pocket_is_refused() {
+        // The play-test archetype: an island at the end of the water, its
+        // only exit the water itself. Mum's ride could once hop out at the
+        // run's side branch — but the clutch washes back to the let-off,
+        // so the pocket is a trap and the gate must refuse the maze.
+        let open = &[
+            // Row 0 and the ladder's two columns, so every dry cell walks
+            // home without ever touching the water.
+            (0, 0, Direction::East),
+            (1, 0, Direction::East),
+            (2, 0, Direction::East),
+            (3, 0, Direction::East),
+            (0, 0, Direction::North),
+            (4, 0, Direction::North),
+            (0, 1, Direction::North),
+            (4, 1, Direction::North),
+            (0, 2, Direction::North),
+            (4, 2, Direction::North),
+            (0, 3, Direction::North),
+            (4, 3, Direction::North),
+            // The rows' dry spans between the columns, each interrupted by
+            // the water at x = 3.
+            (4, 1, Direction::West), // the ride's entry
+            (3, 1, Direction::West),
+            (2, 1, Direction::West),
+            (1, 1, Direction::West),
+            (0, 2, Direction::East),
+            (1, 2, Direction::East),
+            (2, 2, Direction::East),
+            (3, 2, Direction::East),
+            (4, 3, Direction::West), // the run's side branch
+            (3, 3, Direction::West),
+            (2, 3, Direction::West),
+            (1, 3, Direction::West),
+            (0, 4, Direction::East),
+            (1, 4, Direction::East),
+            (3, 3, Direction::North), // the water step to the island
+        ];
+        let currents = &[
+            (3, 1, Direction::North),
+            (3, 2, Direction::North),
+            (3, 3, Direction::North),
+        ];
+        let maze = hand_maze(5, 5, open, currents);
+        assert!(
+            !maze.dry_strongly_connected_from((0, 0)),
+            "an island reachable only by the ride, and left only by a hop-out the clutch can't make, is refused"
+        );
+        // The same maze with the island walk-connected home is accepted.
+        let mut open = open.to_vec();
+        open.push((3, 4, Direction::West));
+        assert!(
+            hand_maze(5, 5, &open, currents).dry_strongly_connected_from((0, 0)),
+            "with a walk home the island is a fine place for a duckling"
+        );
     }
 
     #[test]

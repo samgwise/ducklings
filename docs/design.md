@@ -53,11 +53,11 @@ clutch in tow.
   until mum hops onto it and gathers it back into the line.
   Same-direction runs never leave one-cell dry gaps (the filler merges
   them). Streams are gated
-  for solvability: the movement graph (walking + one-way rides with
-  junction exits and let-offs) must be strongly connected from the start —
-  every dry cell reachable, and able to get back — so a one-way stream can
-  never seal a pocket; an unsolvable seed retries with a salt (the
-  escalation-ladder pattern).
+  for solvability: mum must reach every dry cell (her rides may hop out
+  at side branches), and the clutch must get home from every dry cell —
+  its rides end at the let-off, a mid-ride hop-out stranding them there —
+  so a one-way stream can never seal a pocket; an unsolvable seed retries
+  with a salt (the escalation-ladder pattern).
 - Fallen logs. From level index 2, `1 + (n-2)/4` capped at 3 logs lie
   across open passages (never across a stream, never doubled up). Mum
   always can fly one — a slower, arcing hop (`FLIGHT_HOP_SECS`) with a
